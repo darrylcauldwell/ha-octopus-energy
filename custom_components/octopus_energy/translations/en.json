@@ -1,0 +1,109 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This account is already configured"
+    },
+    "error": {
+      "invalid_auth": "Invalid API key",
+      "account_not_found": "Account not found",
+      "cannot_connect": "Failed to connect",
+      "unknown": "Unexpected error"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "api_key": "API key",
+          "account_number": "Account number"
+        },
+        "data_description": {
+          "api_key": "Your Octopus Energy API key (found at octopus.energy/dashboard/developer)",
+          "account_number": "Your Octopus Energy account number (e.g. A-AAAA1111)"
+        },
+        "description": "Enter your Octopus Energy API key and account number."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "api_key": "API key",
+          "update_interval": "Update interval",
+          "comparison_months": "Comparison months",
+          "comparison_products": "Comparison tariffs",
+          "postcode": "Postcode (solar estimate)"
+        },
+        "data_description": {
+          "api_key": "Your Octopus Energy API key",
+          "update_interval": "How often to fetch new data (minutes)",
+          "comparison_months": "Number of months to compare (1-12)",
+          "comparison_products": "Product codes to compare against (comma-separated)",
+          "postcode": "UK postcode for solar generation estimates (leave empty to disable)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current_rate": {
+        "name": "Current rate"
+      },
+      "next_rate": {
+        "name": "Next rate"
+      },
+      "previous_consumption": {
+        "name": "Previous consumption"
+      },
+      "previous_cost": {
+        "name": "Previous cost"
+      },
+      "standing_charge": {
+        "name": "Standing charge"
+      },
+      "export_current_rate": {
+        "name": "Export current rate"
+      },
+      "export_next_rate": {
+        "name": "Export next rate"
+      },
+      "export_previous_consumption": {
+        "name": "Export previous consumption"
+      },
+      "export_previous_cost": {
+        "name": "Export previous cost"
+      },
+      "export_standing_charge": {
+        "name": "Export standing charge"
+      },
+      "gas_current_rate": {
+        "name": "Gas current rate"
+      },
+      "gas_previous_consumption": {
+        "name": "Gas previous consumption"
+      },
+      "gas_previous_cost": {
+        "name": "Gas previous cost"
+      },
+      "gas_standing_charge": {
+        "name": "Gas standing charge"
+      },
+      "tariff_comparison": {
+        "name": "Tariff comparison"
+      },
+      "solar_estimate": {
+        "name": "Solar estimate"
+      }
+    }
+  },
+  "exceptions": {
+    "timeout_error": {
+      "message": "Timeout connecting to Octopus Energy API"
+    },
+    "connection_error": {
+      "message": "Error connecting to Octopus Energy API"
+    },
+    "update_error": {
+      "message": "Error fetching Octopus Energy data: {error}"
+    }
+  }
+}
