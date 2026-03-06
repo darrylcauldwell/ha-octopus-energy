@@ -53,16 +53,20 @@ async def async_setup_entry(
     coordinator = OctopusEnergyCoordinator(hass, entry, client, account)
     await coordinator.async_config_entry_first_refresh()
 
-    comparison = TariffComparisonCoordinator(hass, entry, client, coordinator)
+    # Always create GraphQL client (used by comparison + solar)
+    graphql_client = OctopusEnergyGraphQLClient(
+        api_key=api_key, session=session
+    )
+
+    comparison = TariffComparisonCoordinator(
+        hass, entry, client, coordinator, graphql_client
+    )
     await comparison.async_config_entry_first_refresh()
 
     # Set up solar estimate coordinator if postcode is configured
     solar: SolarEstimateCoordinator | None = None
     postcode = entry.options.get(CONF_POSTCODE)
     if postcode:
-        graphql_client = OctopusEnergyGraphQLClient(
-            api_key=api_key, session=session
-        )
         solar = SolarEstimateCoordinator(hass, graphql_client, postcode)
         await solar.async_config_entry_first_refresh()
 
