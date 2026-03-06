@@ -26,6 +26,7 @@ from .const import (
     CONF_API_KEY,
     CONF_COMPARISON_MONTHS,
     CONF_COMPARISON_PRODUCTS,
+    CONF_POSTCODE,
     CONF_UPDATE_INTERVAL,
     DEFAULT_COMPARISON_MONTHS,
     DEFAULT_COMPARISON_PRODUCTS,
@@ -152,15 +153,18 @@ class OctopusEnergyOptionsFlow(OptionsFlow):
                 else:
                     products = DEFAULT_COMPARISON_PRODUCTS
 
-                return self.async_create_entry(
-                    data={
-                        CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
-                        CONF_COMPARISON_MONTHS: user_input.get(
-                            CONF_COMPARISON_MONTHS, DEFAULT_COMPARISON_MONTHS
-                        ),
-                        CONF_COMPARISON_PRODUCTS: products,
-                    },
-                )
+                options_data: dict[str, Any] = {
+                    CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
+                    CONF_COMPARISON_MONTHS: user_input.get(
+                        CONF_COMPARISON_MONTHS, DEFAULT_COMPARISON_MONTHS
+                    ),
+                    CONF_COMPARISON_PRODUCTS: products,
+                }
+                postcode = user_input.get(CONF_POSTCODE, "").strip()
+                if postcode:
+                    options_data[CONF_POSTCODE] = postcode.upper()
+
+                return self.async_create_entry(data=options_data)
 
         current_products = self.config_entry.options.get(
             CONF_COMPARISON_PRODUCTS, DEFAULT_COMPARISON_PRODUCTS
@@ -192,6 +196,10 @@ class OctopusEnergyOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_COMPARISON_PRODUCTS,
                     default=products_default,
+                ): str,
+                vol.Optional(
+                    CONF_POSTCODE,
+                    default=self.config_entry.options.get(CONF_POSTCODE, ""),
                 ): str,
             }
         )

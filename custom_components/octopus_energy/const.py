@@ -7,6 +7,7 @@ CONF_ACCOUNT_NUMBER = "account_number"
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_COMPARISON_PRODUCTS = "comparison_products"
 CONF_COMPARISON_MONTHS = "comparison_months"
+CONF_POSTCODE = "postcode"
 
 DEFAULT_UPDATE_INTERVAL = 30
 DEFAULT_COMPARISON_MONTHS = 6

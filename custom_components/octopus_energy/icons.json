@@ -45,6 +45,9 @@
       },
       "tariff_comparison": {
         "default": "mdi:chart-bar"
+      },
+      "solar_estimate": {
+        "default": "mdi:solar-power"
       }
     }
   }

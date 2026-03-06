@@ -30,13 +30,15 @@
           "api_key": "API key",
           "update_interval": "Update interval",
           "comparison_months": "Comparison months",
-          "comparison_products": "Comparison tariffs"
+          "comparison_products": "Comparison tariffs",
+          "postcode": "Postcode (solar estimate)"
         },
         "data_description": {
           "api_key": "Your Octopus Energy API key",
           "update_interval": "How often to fetch new data (minutes)",
           "comparison_months": "Number of months to compare (1-12)",
-          "comparison_products": "Product codes to compare against (comma-separated)"
+          "comparison_products": "Product codes to compare against (comma-separated)",
+          "postcode": "UK postcode for solar generation estimates (leave empty to disable)"
         }
       }
     }
@@ -102,6 +104,10 @@
       "tariff_comparison": {
         "name": "Tariff comparison",
         "description": "Cheapest tariff cost from historical comparison analysis"
+      },
+      "solar_estimate": {
+        "name": "Solar estimate",
+        "description": "Estimated solar generation for today"
       }
     }
   },

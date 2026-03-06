@@ -25,6 +25,7 @@ from .comparison_coordinator import (
     TariffComparisonData,
 )
 from .const import DOMAIN
+from .solar_coordinator import SolarEstimateCoordinator, SolarEstimateData
 from .coordinator import (
     MeterData,
     OctopusEnergyConfigEntry,
@@ -312,6 +313,10 @@ async def async_setup_entry(
     # Add tariff comparison sensor
     entities.append(TariffComparisonSensor(comparison, entry))
 
+    # Add solar estimate sensor if configured
+    if runtime_data.solar is not None:
+        entities.append(SolarEstimateSensor(runtime_data.solar, entry))
+
     async_add_entities(entities)
 
 
@@ -421,5 +426,61 @@ class TariffComparisonSensor(
             "months": data.months,
             "total_consumption_kwh": data.total_consumption_kwh,
             "gsp_region": data.gsp_region,
+            "updated_at": data.updated_at,
+        }
+
+
+class SolarEstimateSensor(
+    CoordinatorEntity[SolarEstimateCoordinator], SensorEntity
+):
+    """Sensor showing estimated solar generation for today."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "solar_estimate"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:solar-power"
+
+    def __init__(
+        self,
+        coordinator: SolarEstimateCoordinator,
+        entry: OctopusEnergyConfigEntry,
+    ) -> None:
+        """Initialize the solar estimate sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_solar_estimate"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{entry.entry_id}_solar")},
+            name="Octopus Energy Solar Estimate",
+            entry_type=DeviceEntryType.SERVICE,
+            manufacturer="Octopus Energy",
+        )
+
+    @property
+    def native_value(self) -> StateType:
+        """Return today's estimated solar generation in kWh."""
+        data = self.coordinator.data
+        if not data:
+            return None
+        return data.today_total_kwh
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return hourly estimates as attributes."""
+        data = self.coordinator.data
+        if not data or not data.hourly_estimates:
+            return None
+
+        return {
+            "hourly_estimates": [
+                {
+                    "date": e.date,
+                    "hour": e.hour,
+                    "value": e.value,
+                }
+                for e in data.hourly_estimates
+            ],
             "updated_at": data.updated_at,
         }

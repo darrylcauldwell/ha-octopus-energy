@@ -45,6 +45,18 @@ async def async_get_config_entry_diagnostics(
         "gsp_region": comparison_data.gsp_region if comparison_data else "",
     }
 
+    solar_info: dict[str, Any] = {"enabled": False}
+    if runtime_data.solar is not None:
+        solar_data = runtime_data.solar.data
+        solar_info = {
+            "enabled": True,
+            "today_total_kwh": solar_data.today_total_kwh if solar_data else 0,
+            "estimate_count": len(solar_data.hourly_estimates)
+            if solar_data
+            else 0,
+            "updated_at": solar_data.updated_at if solar_data else "",
+        }
+
     return {
         "config_entry": async_redact_data(config_entry.as_dict(), TO_REDACT),
         "coordinator_info": {
@@ -62,4 +74,5 @@ async def async_get_config_entry_diagnostics(
         },
         "meters": meters_info,
         "comparison": comparison_info,
+        "solar": solar_info,
     }

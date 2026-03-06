@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aiooctopusenergy import OctopusEnergyClient, OctopusEnergyConnectionError
+import logging
+
+from aiooctopusenergy import (
+    OctopusEnergyClient,
+    OctopusEnergyConnectionError,
+    OctopusEnergyGraphQLClient,
+)
 
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
@@ -14,12 +20,15 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .comparison_coordinator import TariffComparisonCoordinator
-from .const import CONF_ACCOUNT_NUMBER, CONF_API_KEY, DOMAIN
+from .const import CONF_ACCOUNT_NUMBER, CONF_API_KEY, CONF_POSTCODE, DOMAIN
+from .solar_coordinator import SolarEstimateCoordinator
 from .coordinator import (
     OctopusEnergyConfigEntry,
     OctopusEnergyCoordinator,
     OctopusEnergyRuntimeData,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -32,9 +41,8 @@ async def async_setup_entry(
 ) -> bool:
     """Set up Octopus Energy from a config entry."""
     session = async_get_clientsession(hass)
-    client = OctopusEnergyClient(
-        api_key=entry.data[CONF_API_KEY], session=session
-    )
+    api_key = entry.data[CONF_API_KEY]
+    client = OctopusEnergyClient(api_key=api_key, session=session)
 
     # Validate connectivity and fetch account data
     try:
@@ -48,9 +56,20 @@ async def async_setup_entry(
     comparison = TariffComparisonCoordinator(hass, entry, client, coordinator)
     await comparison.async_config_entry_first_refresh()
 
+    # Set up solar estimate coordinator if postcode is configured
+    solar: SolarEstimateCoordinator | None = None
+    postcode = entry.options.get(CONF_POSTCODE)
+    if postcode:
+        graphql_client = OctopusEnergyGraphQLClient(
+            api_key=api_key, session=session
+        )
+        solar = SolarEstimateCoordinator(hass, graphql_client, postcode)
+        await solar.async_config_entry_first_refresh()
+
     entry.runtime_data = OctopusEnergyRuntimeData(
         coordinator=coordinator,
         comparison=comparison,
+        solar=solar,
     )
 
     # Register custom card

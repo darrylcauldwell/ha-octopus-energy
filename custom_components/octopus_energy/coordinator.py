@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .comparison_coordinator import TariffComparisonCoordinator
+    from .solar_coordinator import SolarEstimateCoordinator
 
 from aiooctopusenergy import (
     Account,
@@ -111,6 +112,7 @@ class OctopusEnergyRuntimeData:
 
     coordinator: OctopusEnergyCoordinator
     comparison: TariffComparisonCoordinator
+    solar: SolarEstimateCoordinator | None = None
 
 
 class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
