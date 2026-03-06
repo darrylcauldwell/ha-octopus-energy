@@ -9,6 +9,7 @@ import logging
 from aiooctopusenergy import (
     OctopusEnergyClient,
     OctopusEnergyConnectionError,
+    OctopusEnergyError,
     OctopusEnergyGraphQLClient,
 )
 
@@ -47,7 +48,7 @@ async def async_setup_entry(
     # Validate connectivity and fetch account data
     try:
         account = await client.get_account(entry.data[CONF_ACCOUNT_NUMBER])
-    except OctopusEnergyConnectionError as err:
+    except (OctopusEnergyConnectionError, OctopusEnergyError) as err:
         raise ConfigEntryNotReady from err
 
     coordinator = OctopusEnergyCoordinator(hass, entry, client, account)
@@ -58,17 +59,21 @@ async def async_setup_entry(
         api_key=api_key, session=session
     )
 
+    # Comparison and solar coordinators are non-blocking — they make many API
+    # calls (rates for 5 tariffs, large consumption fetch, GraphQL queries)
+    # and must not trigger 429 rate limits that would block the core
+    # coordinator from loading.  They schedule their first refresh in the
+    # background via async_refresh() instead of async_config_entry_first_refresh().
     comparison = TariffComparisonCoordinator(
         hass, entry, client, coordinator, graphql_client
     )
-    await comparison.async_config_entry_first_refresh()
+    await comparison.async_refresh()
 
-    # Set up solar estimate coordinator if postcode is configured
     solar: SolarEstimateCoordinator | None = None
     postcode = entry.options.get(CONF_POSTCODE)
     if postcode:
         solar = SolarEstimateCoordinator(hass, graphql_client, postcode)
-        await solar.async_config_entry_first_refresh()
+        await solar.async_refresh()
 
     entry.runtime_data = OctopusEnergyRuntimeData(
         coordinator=coordinator,
