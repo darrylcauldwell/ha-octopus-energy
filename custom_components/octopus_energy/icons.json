@@ -42,6 +42,9 @@
       },
       "gas_standing_charge": {
         "default": "mdi:calendar-clock"
+      },
+      "tariff_comparison": {
+        "default": "mdi:chart-bar"
       }
     }
   }

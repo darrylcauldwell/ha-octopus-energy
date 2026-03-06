@@ -6,6 +6,10 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .comparison_coordinator import TariffComparisonCoordinator
 
 from aiooctopusenergy import (
     Account,
@@ -33,7 +37,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-type OctopusEnergyConfigEntry = ConfigEntry[OctopusEnergyCoordinator]
+type OctopusEnergyConfigEntry = ConfigEntry["OctopusEnergyRuntimeData"]
 
 
 def _extract_product_code(tariff_code: str) -> str:
@@ -47,6 +51,22 @@ def _extract_product_code(tariff_code: str) -> str:
     if len(parts) >= 4:
         return "-".join(parts[2:-1])
     return tariff_code
+
+
+def _extract_gsp_suffix(tariff_code: str) -> str:
+    """Extract GSP region suffix from a tariff code.
+
+    E.g. E-1R-AGILE-24-10-01-C -> C
+    """
+    return tariff_code.rsplit("-", 1)[-1] if "-" in tariff_code else tariff_code
+
+
+def _build_tariff_code(product_code: str, gsp_suffix: str) -> str:
+    """Build a tariff code from product code and GSP suffix.
+
+    E.g. ("VAR-22-11-01", "C") -> E-1R-VAR-22-11-01-C
+    """
+    return f"E-1R-{product_code}-{gsp_suffix}"
 
 
 def _get_active_agreement(
@@ -83,6 +103,14 @@ class OctopusEnergyData:
 
     account: Account
     meters: dict[str, MeterData] = field(default_factory=dict)
+
+
+@dataclass
+class OctopusEnergyRuntimeData:
+    """Runtime data for the Octopus Energy config entry."""
+
+    coordinator: OctopusEnergyCoordinator
+    comparison: TariffComparisonCoordinator
 
 
 class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):

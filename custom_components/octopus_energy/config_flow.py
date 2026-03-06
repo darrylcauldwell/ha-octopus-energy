@@ -24,7 +24,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     CONF_ACCOUNT_NUMBER,
     CONF_API_KEY,
+    CONF_COMPARISON_MONTHS,
+    CONF_COMPARISON_PRODUCTS,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_COMPARISON_MONTHS,
+    DEFAULT_COMPARISON_PRODUCTS,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
@@ -137,9 +141,35 @@ class OctopusEnergyOptionsFlow(OptionsFlow):
                     )
 
             if not errors:
-                return self.async_create_entry(
-                    data={CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL]},
+                # Parse comparison products from comma-separated string
+                products_str = user_input.get(
+                    CONF_COMPARISON_PRODUCTS, ""
                 )
+                if isinstance(products_str, str) and products_str.strip():
+                    products = [
+                        p.strip() for p in products_str.split(",") if p.strip()
+                    ]
+                else:
+                    products = DEFAULT_COMPARISON_PRODUCTS
+
+                return self.async_create_entry(
+                    data={
+                        CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
+                        CONF_COMPARISON_MONTHS: user_input.get(
+                            CONF_COMPARISON_MONTHS, DEFAULT_COMPARISON_MONTHS
+                        ),
+                        CONF_COMPARISON_PRODUCTS: products,
+                    },
+                )
+
+        current_products = self.config_entry.options.get(
+            CONF_COMPARISON_PRODUCTS, DEFAULT_COMPARISON_PRODUCTS
+        )
+        products_default = (
+            ", ".join(current_products)
+            if isinstance(current_products, list)
+            else current_products
+        )
 
         schema = vol.Schema(
             {
@@ -153,6 +183,16 @@ class OctopusEnergyOptionsFlow(OptionsFlow):
                         CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
                     ),
                 ): vol.All(int, vol.Range(min=10, max=120)),
+                vol.Required(
+                    CONF_COMPARISON_MONTHS,
+                    default=self.config_entry.options.get(
+                        CONF_COMPARISON_MONTHS, DEFAULT_COMPARISON_MONTHS
+                    ),
+                ): vol.All(int, vol.Range(min=1, max=12)),
+                vol.Optional(
+                    CONF_COMPARISON_PRODUCTS,
+                    default=products_default,
+                ): str,
             }
         )
 

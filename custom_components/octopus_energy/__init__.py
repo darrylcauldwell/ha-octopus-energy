@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from aiooctopusenergy import OctopusEnergyClient, OctopusEnergyConnectionError
 
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .comparison_coordinator import TariffComparisonCoordinator
 from .const import CONF_ACCOUNT_NUMBER, CONF_API_KEY, DOMAIN
-from .coordinator import OctopusEnergyConfigEntry, OctopusEnergyCoordinator
+from .coordinator import (
+    OctopusEnergyConfigEntry,
+    OctopusEnergyCoordinator,
+    OctopusEnergyRuntimeData,
+)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+URL_BASE = "/octopus_energy"
+CARD_URL = f"{URL_BASE}/octopus-tariff-comparison-card.js"
 
 
 async def async_setup_entry(
@@ -33,13 +45,36 @@ async def async_setup_entry(
     coordinator = OctopusEnergyCoordinator(hass, entry, client, account)
     await coordinator.async_config_entry_first_refresh()
 
-    entry.runtime_data = coordinator
+    comparison = TariffComparisonCoordinator(hass, entry, client, coordinator)
+    await comparison.async_config_entry_first_refresh()
+
+    entry.runtime_data = OctopusEnergyRuntimeData(
+        coordinator=coordinator,
+        comparison=comparison,
+    )
+
+    # Register custom card
+    await _async_register_card(hass)
 
     # Reload when options change (update interval or API key)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_register_card(hass: HomeAssistant) -> None:
+    """Register the custom Lovelace card."""
+    hass.data.setdefault(DOMAIN + "_frontend", False)
+    if hass.data[DOMAIN + "_frontend"]:
+        return
+    hass.data[DOMAIN + "_frontend"] = True
+
+    frontend_path = str(Path(__file__).parent / "frontend")
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(URL_BASE, frontend_path, False)]
+    )
+    add_extra_js_url(hass, CARD_URL)
 
 
 async def _async_options_updated(

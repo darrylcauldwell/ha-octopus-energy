@@ -28,11 +28,15 @@
       "init": {
         "data": {
           "api_key": "API key",
-          "update_interval": "Update interval"
+          "update_interval": "Update interval",
+          "comparison_months": "Comparison months",
+          "comparison_products": "Comparison tariffs"
         },
         "data_description": {
           "api_key": "Your Octopus Energy API key",
-          "update_interval": "How often to fetch new data (minutes)"
+          "update_interval": "How often to fetch new data (minutes)",
+          "comparison_months": "Number of months to compare (1-12)",
+          "comparison_products": "Product codes to compare against (comma-separated)"
         }
       }
     }
@@ -94,6 +98,10 @@
       "gas_standing_charge": {
         "name": "Gas standing charge",
         "description": "Current daily gas standing charge (inc. VAT)"
+      },
+      "tariff_comparison": {
+        "name": "Tariff comparison",
+        "description": "Cheapest tariff cost from historical comparison analysis"
       }
     }
   },

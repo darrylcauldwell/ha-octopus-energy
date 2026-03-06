@@ -15,9 +15,16 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .comparison_coordinator import (
+    TariffComparisonCoordinator,
+    TariffComparisonData,
+)
+from .const import DOMAIN
 from .coordinator import (
     MeterData,
     OctopusEnergyConfigEntry,
@@ -272,8 +279,10 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Octopus Energy sensor entities."""
-    coordinator = entry.runtime_data
-    entities: list[OctopusEnergySensor] = []
+    runtime_data = entry.runtime_data
+    coordinator = runtime_data.coordinator
+    comparison = runtime_data.comparison
+    entities: list[SensorEntity] = []
 
     for meter_id, meter in coordinator.data.meters.items():
         if meter.is_gas:
@@ -299,6 +308,9 @@ async def async_setup_entry(
                 entities.append(
                     OctopusEnergySensor(coordinator, desc, meter_id)
                 )
+
+    # Add tariff comparison sensor
+    entities.append(TariffComparisonSensor(comparison, entry))
 
     async_add_entities(entities)
 
@@ -335,3 +347,79 @@ class OctopusEnergySensor(OctopusEnergyEntity, SensorEntity):
         if meter is None:
             return None
         return self.entity_description.attrs_fn(meter)
+
+
+class TariffComparisonSensor(
+    CoordinatorEntity[TariffComparisonCoordinator], SensorEntity
+):
+    """Sensor showing cheapest tariff cost from comparison analysis."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "tariff_comparison"
+    _attr_native_unit_of_measurement = CURRENCY_POUNDS
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:chart-bar"
+
+    def __init__(
+        self,
+        coordinator: TariffComparisonCoordinator,
+        entry: OctopusEnergyConfigEntry,
+    ) -> None:
+        """Initialize the comparison sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_tariff_comparison"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{entry.entry_id}_comparison")},
+            name="Octopus Energy Tariff Comparison",
+            entry_type=DeviceEntryType.SERVICE,
+            manufacturer="Octopus Energy",
+        )
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the cheapest tariff's total cost."""
+        data = self.coordinator.data
+        if not data or not data.tariffs:
+            return None
+        valid = [t for t in data.tariffs if t.error is None and t.total_cost > 0]
+        if not valid:
+            return None
+        return min(t.total_cost for t in valid)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return tariff comparison data as attributes."""
+        data = self.coordinator.data
+        if not data or not data.tariffs:
+            return None
+
+        return {
+            "tariffs": [
+                {
+                    "product_code": t.product_code,
+                    "display_name": t.display_name,
+                    "tariff_code": t.tariff_code,
+                    "is_current": t.is_current,
+                    "total_cost": t.total_cost,
+                    "error": t.error,
+                    "months": [
+                        {
+                            "month": m.month,
+                            "days_with_data": m.days_with_data,
+                            "days_in_month": m.days_in_month,
+                            "unit_cost": m.unit_cost,
+                            "standing_cost": m.standing_cost,
+                            "total_cost": m.total_cost,
+                            "consumption_kwh": m.consumption_kwh,
+                        }
+                        for m in t.months
+                    ],
+                }
+                for t in data.tariffs
+            ],
+            "months": data.months,
+            "total_consumption_kwh": data.total_consumption_kwh,
+            "gsp_region": data.gsp_region,
+            "updated_at": data.updated_at,
+        }

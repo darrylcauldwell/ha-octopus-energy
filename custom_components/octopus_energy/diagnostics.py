@@ -17,7 +17,9 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, config_entry: OctopusEnergyConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    coordinator = config_entry.runtime_data
+    runtime_data = config_entry.runtime_data
+    coordinator = runtime_data.coordinator
+    comparison = runtime_data.comparison
     data = coordinator.data
 
     meters_info: dict[str, Any] = {}
@@ -32,6 +34,16 @@ async def async_get_config_entry_diagnostics(
             "consumption_count": len(meter.consumption),
             "standing_charges_count": len(meter.standing_charges),
         }
+
+    comparison_data = comparison.data
+    comparison_info: dict[str, Any] = {
+        "tariff_count": len(comparison_data.tariffs) if comparison_data else 0,
+        "months": comparison_data.months if comparison_data else [],
+        "total_consumption_kwh": comparison_data.total_consumption_kwh
+        if comparison_data
+        else 0,
+        "gsp_region": comparison_data.gsp_region if comparison_data else "",
+    }
 
     return {
         "config_entry": async_redact_data(config_entry.as_dict(), TO_REDACT),
@@ -49,4 +61,5 @@ async def async_get_config_entry_diagnostics(
             "property_count": len(data.account.properties),
         },
         "meters": meters_info,
+        "comparison": comparison_info,
     }
