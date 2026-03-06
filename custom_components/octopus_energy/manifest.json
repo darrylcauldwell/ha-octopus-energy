@@ -1,0 +1,13 @@
+{
+  "domain": "octopus_energy",
+  "name": "Octopus Energy",
+  "codeowners": ["@darrylcauldwell"],
+  "config_flow": true,
+  "documentation": "https://github.com/darrylcauldwell/ha-octopus-energy",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "loggers": ["aiooctopusenergy"],
+  "quality_scale": "bronze",
+  "requirements": ["aiooctopusenergy==0.1.0"],
+  "version": "0.1.0"
+}

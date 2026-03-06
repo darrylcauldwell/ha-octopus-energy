@@ -1,0 +1,48 @@
+{
+  "entity": {
+    "sensor": {
+      "current_rate": {
+        "default": "mdi:currency-gbp"
+      },
+      "next_rate": {
+        "default": "mdi:currency-gbp"
+      },
+      "previous_consumption": {
+        "default": "mdi:flash"
+      },
+      "previous_cost": {
+        "default": "mdi:cash"
+      },
+      "standing_charge": {
+        "default": "mdi:calendar-clock"
+      },
+      "export_current_rate": {
+        "default": "mdi:currency-gbp"
+      },
+      "export_next_rate": {
+        "default": "mdi:currency-gbp"
+      },
+      "export_previous_consumption": {
+        "default": "mdi:flash"
+      },
+      "export_previous_cost": {
+        "default": "mdi:cash"
+      },
+      "export_standing_charge": {
+        "default": "mdi:calendar-clock"
+      },
+      "gas_current_rate": {
+        "default": "mdi:gas-burner"
+      },
+      "gas_previous_consumption": {
+        "default": "mdi:gas-burner"
+      },
+      "gas_previous_cost": {
+        "default": "mdi:cash"
+      },
+      "gas_standing_charge": {
+        "default": "mdi:calendar-clock"
+      }
+    }
+  }
+}

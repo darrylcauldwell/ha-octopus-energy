@@ -1,0 +1,111 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This account is already configured"
+    },
+    "error": {
+      "invalid_auth": "Invalid API key",
+      "account_not_found": "Account not found",
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "api_key": "API key",
+          "account_number": "Account number"
+        },
+        "data_description": {
+          "api_key": "Your Octopus Energy API key (found at octopus.energy/dashboard/developer)",
+          "account_number": "Your Octopus Energy account number (e.g. A-AAAA1111)"
+        },
+        "description": "Enter your Octopus Energy API key and account number."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "api_key": "API key",
+          "update_interval": "Update interval"
+        },
+        "data_description": {
+          "api_key": "Your Octopus Energy API key",
+          "update_interval": "How often to fetch new data (minutes)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current_rate": {
+        "name": "Current rate",
+        "description": "Current half-hourly electricity unit rate (inc. VAT)"
+      },
+      "next_rate": {
+        "name": "Next rate",
+        "description": "Next half-hourly electricity unit rate (inc. VAT)"
+      },
+      "previous_consumption": {
+        "name": "Previous consumption",
+        "description": "Total electricity consumption for yesterday"
+      },
+      "previous_cost": {
+        "name": "Previous cost",
+        "description": "Total electricity cost for yesterday"
+      },
+      "standing_charge": {
+        "name": "Standing charge",
+        "description": "Current daily standing charge (inc. VAT)"
+      },
+      "export_current_rate": {
+        "name": "Export current rate",
+        "description": "Current half-hourly export unit rate (inc. VAT)"
+      },
+      "export_next_rate": {
+        "name": "Export next rate",
+        "description": "Next half-hourly export unit rate (inc. VAT)"
+      },
+      "export_previous_consumption": {
+        "name": "Export previous consumption",
+        "description": "Total electricity export for yesterday"
+      },
+      "export_previous_cost": {
+        "name": "Export previous cost",
+        "description": "Total export payment for yesterday"
+      },
+      "export_standing_charge": {
+        "name": "Export standing charge",
+        "description": "Current daily export standing charge (inc. VAT)"
+      },
+      "gas_current_rate": {
+        "name": "Gas current rate",
+        "description": "Current gas unit rate (inc. VAT)"
+      },
+      "gas_previous_consumption": {
+        "name": "Gas previous consumption",
+        "description": "Total gas consumption for yesterday"
+      },
+      "gas_previous_cost": {
+        "name": "Gas previous cost",
+        "description": "Total gas cost for yesterday"
+      },
+      "gas_standing_charge": {
+        "name": "Gas standing charge",
+        "description": "Current daily gas standing charge (inc. VAT)"
+      }
+    }
+  },
+  "exceptions": {
+    "timeout_error": {
+      "message": "Timeout connecting to Octopus Energy API"
+    },
+    "connection_error": {
+      "message": "Error connecting to Octopus Energy API"
+    },
+    "update_error": {
+      "message": "Error fetching Octopus Energy data: {error}"
+    }
+  }
+}
