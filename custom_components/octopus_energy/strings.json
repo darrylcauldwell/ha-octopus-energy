@@ -112,6 +112,9 @@
     }
   },
   "exceptions": {
+    "cancelled_error": {
+      "message": "Data update was cancelled, will retry on next interval"
+    },
     "timeout_error": {
       "message": "Timeout connecting to Octopus Energy API"
     },

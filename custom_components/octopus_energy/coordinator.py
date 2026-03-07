@@ -239,6 +239,11 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
 
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cancelled_error",
+            ) from err
         except OctopusEnergyTimeoutError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
