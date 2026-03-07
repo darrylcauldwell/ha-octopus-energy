@@ -92,6 +92,9 @@
       },
       "solar_estimate": {
         "name": "Solar estimate"
+      },
+      "carbon_correlation": {
+        "name": "Carbon correlation"
       }
     }
   },

@@ -24,11 +24,15 @@ from aiooctopusenergy import (
     StandingCharge,
 )
 
+import aiohttp
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CARBON_INTENSITY_API_URL,
     CONF_ACCOUNT_NUMBER,
     CONF_API_KEY,
     CONF_UPDATE_INTERVAL,
@@ -84,6 +88,17 @@ def _get_active_agreement(
 
 
 @dataclass
+class CarbonIntensityPeriod:
+    """Carbon intensity data for a single half-hour period."""
+
+    from_dt: datetime
+    to_dt: datetime
+    forecast: int
+    actual: int | None
+    index: str
+
+
+@dataclass
 class MeterData:
     """Data for a single meter."""
 
@@ -104,6 +119,7 @@ class OctopusEnergyData:
 
     account: Account
     meters: dict[str, MeterData] = field(default_factory=dict)
+    carbon_intensity: list[CarbonIntensityPeriod] = field(default_factory=list)
 
 
 @dataclass
@@ -140,6 +156,45 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
         )
         self.client = client
         self._account = account
+        self._session = async_get_clientsession(hass)
+
+    async def _fetch_carbon_intensity(
+        self, date: str
+    ) -> list[CarbonIntensityPeriod]:
+        """Fetch carbon intensity data for a date from the National Grid ESO API.
+
+        Non-fatal: returns empty list on any failure.
+        """
+        url = CARBON_INTENSITY_API_URL.format(date=date)
+        try:
+            async with asyncio.timeout(10):
+                resp = await self._session.get(url)
+                resp.raise_for_status()
+                data = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            _LOGGER.warning("Failed to fetch carbon intensity for %s: %s", date, err)
+            return []
+
+        periods: list[CarbonIntensityPeriod] = []
+        for entry in data.get("data", []):
+            try:
+                intensity = entry["intensity"]
+                periods.append(
+                    CarbonIntensityPeriod(
+                        from_dt=datetime.fromisoformat(
+                            entry["from"].replace("Z", "+00:00")
+                        ),
+                        to_dt=datetime.fromisoformat(
+                            entry["to"].replace("Z", "+00:00")
+                        ),
+                        forecast=intensity["forecast"],
+                        actual=intensity.get("actual"),
+                        index=intensity.get("index", "unknown"),
+                    )
+                )
+            except (KeyError, ValueError) as err:
+                _LOGGER.debug("Skipping malformed carbon entry: %s", err)
+        return periods
 
     async def _async_update_data(self) -> OctopusEnergyData:
         """Fetch data from the Octopus Energy API."""
@@ -300,4 +355,15 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
             else:
                 meter.standing_charges = standing_result
 
-        return OctopusEnergyData(account=self._account, meters=meters)
+        # Fetch carbon intensity for yesterday (non-fatal)
+        yesterday_str = (
+            datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+            - timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        carbon = await self._fetch_carbon_intensity(yesterday_str)
+        if not carbon and previous:
+            carbon = previous.carbon_intensity
+
+        return OctopusEnergyData(
+            account=self._account, meters=meters, carbon_intensity=carbon
+        )

@@ -108,6 +108,10 @@
       "solar_estimate": {
         "name": "Solar estimate",
         "description": "Estimated solar generation for today"
+      },
+      "carbon_correlation": {
+        "name": "Carbon correlation",
+        "description": "Weighted average carbon intensity of yesterday's electricity consumption"
       }
     }
   },
