@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -18,6 +18,7 @@ from custom_components.octopus_energy.comparison_coordinator import (
     MonthlyTariffCost,
     TariffComparisonData,
     _compute_monthly_costs,
+    _find_missing_ranges,
 )
 from custom_components.octopus_energy.coordinator import (
     _build_tariff_code,
@@ -297,3 +298,38 @@ class TestTariffComparisonDataSmartComparison:
         assert data.octopus_comparisons[0].product_code == "AGILE-24-10-01"
         assert data.octopus_comparisons[0].cost_inc_vat == 150.50
         assert data.octopus_comparisons[1].product_code == "VAR-22-11-01"
+
+
+class TestFindMissingRanges:
+    def test_all_missing(self):
+        dates = [date(2025, 3, 1), date(2025, 3, 2), date(2025, 3, 3)]
+        result = _find_missing_ranges(dates, set())
+        assert result == [(date(2025, 3, 1), date(2025, 3, 4))]
+
+    def test_none_missing(self):
+        dates = [date(2025, 3, 1), date(2025, 3, 2), date(2025, 3, 3)]
+        cached = {"2025-03-01", "2025-03-02", "2025-03-03"}
+        assert _find_missing_ranges(dates, cached) == []
+
+    def test_gap_in_middle(self):
+        dates = [date(2025, 3, 1), date(2025, 3, 2), date(2025, 3, 3),
+                 date(2025, 3, 4), date(2025, 3, 5)]
+        cached = {"2025-03-01", "2025-03-05"}
+        assert _find_missing_ranges(dates, cached) == [(date(2025, 3, 2), date(2025, 3, 5))]
+
+    def test_multiple_gaps(self):
+        dates = [date(2025, 3, 1), date(2025, 3, 2), date(2025, 3, 3),
+                 date(2025, 3, 4), date(2025, 3, 5)]
+        cached = {"2025-03-01", "2025-03-03"}
+        assert _find_missing_ranges(dates, cached) == [
+            (date(2025, 3, 2), date(2025, 3, 3)),
+            (date(2025, 3, 4), date(2025, 3, 6)),
+        ]
+
+    def test_single_missing_day(self):
+        dates = [date(2025, 3, 1), date(2025, 3, 2), date(2025, 3, 3)]
+        cached = {"2025-03-01", "2025-03-03"}
+        assert _find_missing_ranges(dates, cached) == [(date(2025, 3, 2), date(2025, 3, 3))]
+
+    def test_empty_input(self):
+        assert _find_missing_ranges([], set()) == []

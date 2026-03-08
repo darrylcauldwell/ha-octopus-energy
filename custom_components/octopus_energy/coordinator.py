@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import logging
 from typing import TYPE_CHECKING
 
@@ -157,6 +157,37 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
         self.client = client
         self._account = account
         self._session = async_get_clientsession(hass)
+        # Smart cache tracking
+        self._consumption_date: date | None = None
+        self._standing_charges_date: date | None = None
+        self._carbon_date: date | None = None
+        self._rates_last_fetched: datetime | None = None
+
+    def _should_fetch_rates(self, meter: MeterData, now: datetime) -> bool:
+        """Determine whether rates need fetching for a meter."""
+        previous = self.data
+        if not previous:
+            return True
+        prev_meter = previous.meters.get(meter.meter_id)
+        if not prev_meter or not prev_meter.rates:
+            return True
+
+        if meter.is_gas:
+            if self._rates_last_fetched and self._rates_last_fetched.date() == now.date():
+                return False
+            return True
+
+        tomorrow_midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        has_tomorrow = any(r.valid_from >= tomorrow_midnight for r in prev_meter.rates)
+        if has_tomorrow:
+            return False
+        if now.hour >= 16:
+            return True
+        if self._rates_last_fetched is None:
+            return True
+        return (now - self._rates_last_fetched) > timedelta(hours=4)
 
     async def _fetch_carbon_intensity(
         self, date: str
@@ -197,7 +228,18 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
         return periods
 
     async def _async_update_data(self) -> OctopusEnergyData:
-        """Fetch data from the Octopus Energy API."""
+        """Fetch data from the Octopus Energy API with smart caching."""
+        now = datetime.now(UTC)
+        yesterday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=1
+        )
+        today = now.date()
+        previous = self.data
+
+        fetch_consumption = self._consumption_date != yesterday.date()
+        fetch_standing = self._standing_charges_date != today
+        fetch_carbon = self._carbon_date != yesterday.date()
+
         # Build meter list from account
         meters: dict[str, MeterData] = {}
 
@@ -234,16 +276,17 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                     is_gas=True,
                 )
 
-        # Fetch rates, consumption, and standing charges concurrently
-        tasks = []
-        meter_keys = list(meters.keys())
+        # Build task lists with tracking
+        tasks: list = []
+        task_map: list[tuple[str, str]] = []  # (meter_id, category)
 
         for meter_id, meter in meters.items():
+            if not self._should_fetch_rates(meter, now):
+                _LOGGER.debug("Cache hit: rates for %s", meter_id)
+                continue
             if meter.is_gas:
                 tasks.append(
-                    self.client.get_gas_rates(
-                        meter.product_code, meter.tariff_code
-                    )
+                    self.client.get_gas_rates(meter.product_code, meter.tariff_code)
                 )
             else:
                 tasks.append(
@@ -251,46 +294,90 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                         meter.product_code, meter.tariff_code
                     )
                 )
+            task_map.append((meter_id, "rates"))
 
-        for meter_id, meter in meters.items():
-            # Consumption for yesterday
-            yesterday_start = datetime.now(UTC).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ) - timedelta(days=1)
+        if fetch_consumption:
+            yesterday_start = yesterday
             yesterday_end = yesterday_start + timedelta(days=1)
-
-            if meter.is_gas:
-                tasks.append(
-                    self.client.get_gas_consumption(
-                        meter_id.split("_")[0],
-                        meter.serial_number,
-                        period_from=yesterday_start,
-                        period_to=yesterday_end,
+            for meter_id, meter in meters.items():
+                if meter.is_gas:
+                    tasks.append(
+                        self.client.get_gas_consumption(
+                            meter_id.split("_")[0],
+                            meter.serial_number,
+                            period_from=yesterday_start,
+                            period_to=yesterday_end,
+                        )
                     )
-                )
-            else:
-                tasks.append(
-                    self.client.get_electricity_consumption(
-                        meter_id.split("_")[0],
-                        meter.serial_number,
-                        period_from=yesterday_start,
-                        period_to=yesterday_end,
+                else:
+                    tasks.append(
+                        self.client.get_electricity_consumption(
+                            meter_id.split("_")[0],
+                            meter.serial_number,
+                            period_from=yesterday_start,
+                            period_to=yesterday_end,
+                        )
                     )
-                )
+                task_map.append((meter_id, "consumption"))
+        else:
+            _LOGGER.debug("Cache hit: consumption")
 
+        if fetch_standing:
+            for meter_id, meter in meters.items():
+                if meter.is_gas:
+                    tasks.append(
+                        self.client.get_gas_standing_charges(
+                            meter.product_code, meter.tariff_code
+                        )
+                    )
+                else:
+                    tasks.append(
+                        self.client.get_electricity_standing_charges(
+                            meter.product_code, meter.tariff_code
+                        )
+                    )
+                task_map.append((meter_id, "standing"))
+        else:
+            _LOGGER.debug("Cache hit: standing charges")
+
+        categories = {cat for _, cat in task_map}
+        skipped = {"rates", "consumption", "standing"} - categories
+        _LOGGER.debug(
+            "API calls this cycle: %d (fetching=%s, skipped=%s)",
+            len(tasks),
+            sorted(categories) if categories else "none",
+            sorted(skipped) if skipped else "none",
+        )
+
+        # Pre-populate from previous data for skipped categories
+        fetching_rates = {mid for mid, cat in task_map if cat == "rates"}
         for meter_id, meter in meters.items():
-            if meter.is_gas:
-                tasks.append(
-                    self.client.get_gas_standing_charges(
-                        meter.product_code, meter.tariff_code
-                    )
-                )
-            else:
-                tasks.append(
-                    self.client.get_electricity_standing_charges(
-                        meter.product_code, meter.tariff_code
-                    )
-                )
+            prev_meter = previous.meters.get(meter_id) if previous else None
+            if prev_meter:
+                if not fetch_consumption:
+                    meter.consumption = prev_meter.consumption
+                if not fetch_standing:
+                    meter.standing_charges = prev_meter.standing_charges
+                if meter_id not in fetching_rates:
+                    meter.rates = prev_meter.rates
+
+        # Carbon intensity — once per calendar day
+        carbon: list[CarbonIntensityPeriod] = []
+        if fetch_carbon:
+            yesterday_str = yesterday.strftime("%Y-%m-%d")
+            carbon = await self._fetch_carbon_intensity(yesterday_str)
+            if carbon:
+                self._carbon_date = yesterday.date()
+            elif previous:
+                carbon = previous.carbon_intensity
+        else:
+            _LOGGER.debug("Cache hit: carbon intensity")
+            carbon = previous.carbon_intensity if previous else []
+
+        if not tasks:
+            return OctopusEnergyData(
+                account=self._account, meters=meters, carbon_intensity=carbon
+            )
 
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -316,53 +403,41 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                 translation_placeholders={"error": str(err)},
             ) from err
 
-        previous = self.data
-        n = len(meter_keys)
-
-        # Parse results: first n = rates, next n = consumption, next n = standing charges
-        for i, meter_id in enumerate(meter_keys):
+        consumption_ok = True
+        standing_ok = True
+        for i, (meter_id, category) in enumerate(task_map):
             meter = meters[meter_id]
             prev_meter = previous.meters.get(meter_id) if previous else None
+            result = results[i]
 
-            rates_result = results[i]
-            if isinstance(rates_result, BaseException):
-                _LOGGER.warning("Failed to fetch rates for %s: %s", meter_id, rates_result)
-                meter.rates = prev_meter.rates if prev_meter else []
-            else:
-                meter.rates = rates_result
-
-            consumption_result = results[n + i]
-            if isinstance(consumption_result, BaseException):
+            if isinstance(result, BaseException):
                 _LOGGER.warning(
-                    "Failed to fetch consumption for %s: %s",
-                    meter_id,
-                    consumption_result,
+                    "Failed to fetch %s for %s: %s", category, meter_id, result
                 )
-                meter.consumption = prev_meter.consumption if prev_meter else []
+                if category == "rates":
+                    meter.rates = prev_meter.rates if prev_meter else []
+                elif category == "consumption":
+                    meter.consumption = prev_meter.consumption if prev_meter else []
+                    consumption_ok = False
+                elif category == "standing":
+                    meter.standing_charges = (
+                        prev_meter.standing_charges if prev_meter else []
+                    )
+                    standing_ok = False
             else:
-                meter.consumption = consumption_result
+                if category == "rates":
+                    meter.rates = result
+                elif category == "consumption":
+                    meter.consumption = result
+                elif category == "standing":
+                    meter.standing_charges = result
 
-            standing_result = results[2 * n + i]
-            if isinstance(standing_result, BaseException):
-                _LOGGER.warning(
-                    "Failed to fetch standing charges for %s: %s",
-                    meter_id,
-                    standing_result,
-                )
-                meter.standing_charges = (
-                    prev_meter.standing_charges if prev_meter else []
-                )
-            else:
-                meter.standing_charges = standing_result
-
-        # Fetch carbon intensity for yesterday (non-fatal)
-        yesterday_str = (
-            datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-            - timedelta(days=1)
-        ).strftime("%Y-%m-%d")
-        carbon = await self._fetch_carbon_intensity(yesterday_str)
-        if not carbon and previous:
-            carbon = previous.carbon_intensity
+        if fetch_consumption and consumption_ok:
+            self._consumption_date = yesterday.date()
+        if fetch_standing and standing_ok:
+            self._standing_charges_date = today
+        if categories & {"rates"}:
+            self._rates_last_fetched = now
 
         return OctopusEnergyData(
             account=self._account, meters=meters, carbon_intensity=carbon

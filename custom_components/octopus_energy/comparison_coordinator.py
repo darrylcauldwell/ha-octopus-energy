@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import calendar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import logging
 
 from aiooctopusenergy import (
@@ -150,6 +150,33 @@ def _compute_monthly_costs(
     return monthly_costs
 
 
+def _find_missing_ranges(
+    expected_dates: list[date], cached_keys: set[str]
+) -> list[tuple[date, date]]:
+    """Find contiguous date ranges not present in cache.
+
+    Returns list of (start_date, end_date_exclusive) tuples.
+    """
+    missing = sorted(d for d in expected_dates if d.isoformat() not in cached_keys)
+    if not missing:
+        return []
+
+    ranges: list[tuple[date, date]] = []
+    range_start = missing[0]
+    prev = missing[0]
+
+    for d in missing[1:]:
+        if (d - prev).days == 1:
+            prev = d
+        else:
+            ranges.append((range_start, prev + timedelta(days=1)))
+            range_start = d
+            prev = d
+
+    ranges.append((range_start, prev + timedelta(days=1)))
+    return ranges
+
+
 class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
     """Coordinator that computes tariff cost comparisons."""
 
@@ -174,6 +201,38 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         self.client = client
         self._main = main_coordinator
         self._graphql_client = graphql_client
+        # Incremental cache
+        self._cached_consumption: dict[str, list[tuple[datetime, datetime, float]]] = {}
+        self._cached_rates: dict[str, list] = {}
+        self._cached_standing: dict[str, list] = {}
+
+    async def _get_cached_rates(
+        self, product_code: str, tariff_code: str,
+        period_start: datetime, period_end: datetime,
+    ) -> list:
+        """Return cached rates or fetch and cache them."""
+        if product_code in self._cached_rates:
+            return self._cached_rates[product_code]
+        rates = await self.client.get_electricity_rates(
+            product_code, tariff_code,
+            period_from=period_start, period_to=period_end, page_size=25000,
+        )
+        self._cached_rates[product_code] = rates
+        return rates
+
+    async def _get_cached_standing(
+        self, product_code: str, tariff_code: str,
+        period_start: datetime, period_end: datetime,
+    ) -> list:
+        """Return cached standing charges or fetch and cache them."""
+        if product_code in self._cached_standing:
+            return self._cached_standing[product_code]
+        charges = await self.client.get_electricity_standing_charges(
+            product_code, tariff_code,
+            period_from=period_start, period_to=period_end, page_size=25000,
+        )
+        self._cached_standing[product_code] = charges
+        return charges
 
     async def _async_update_data(self) -> TariffComparisonData:
         """Fetch consumption and re-price against comparison tariffs."""
@@ -181,7 +240,6 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         if not main_data or not main_data.meters:
             return TariffComparisonData()
 
-        # Find first import electricity meter
         import_meter = None
         for meter in main_data.meters.values():
             if not meter.is_gas and not meter.is_export:
@@ -197,7 +255,6 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         current_product = import_meter.product_code
         account_number = self.config_entry.data[CONF_ACCOUNT_NUMBER]
 
-        # Determine comparison period
         num_months = self.config_entry.options.get(
             CONF_COMPARISON_MONTHS, DEFAULT_COMPARISON_MONTHS
         )
@@ -206,7 +263,6 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             days=1
         )
 
-        # Start of period: first day of (now - num_months)
         start_month = now.month - num_months
         start_year = now.year
         while start_month <= 0:
@@ -214,7 +270,6 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             start_year -= 1
         period_start = datetime(start_year, start_month, 1, tzinfo=UTC)
 
-        # Generate month labels
         months: list[str] = []
         cursor = period_start
         while cursor <= yesterday:
@@ -224,32 +279,69 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             else:
                 cursor = cursor.replace(month=cursor.month + 1)
 
-        # Fetch all consumption for the period
-        try:
-            consumption = await self.client.get_electricity_consumption(
-                mpan,
-                serial,
-                period_from=period_start,
-                period_to=yesterday + timedelta(days=1),
-                page_size=25000,
-            )
-        except Exception as err:
-            raise UpdateFailed(f"Failed to fetch consumption: {err}") from err
+        # Incremental consumption fetch
+        expected_dates: list[date] = []
+        d = period_start.date()
+        while d <= yesterday.date():
+            expected_dates.append(d)
+            d += timedelta(days=1)
 
-        if not consumption:
+        valid_keys = {d.isoformat() for d in expected_dates}
+        stale = set(self._cached_consumption.keys()) - valid_keys
+        for key in stale:
+            del self._cached_consumption[key]
+
+        missing_ranges = _find_missing_ranges(
+            expected_dates, set(self._cached_consumption.keys())
+        )
+
+        _LOGGER.debug(
+            "Consumption cache: %d cached days, %d missing ranges",
+            len(self._cached_consumption),
+            len(missing_ranges),
+        )
+
+        for range_start, range_end in missing_ranges:
+            try:
+                consumption = await self.client.get_electricity_consumption(
+                    mpan, serial,
+                    period_from=datetime(
+                        range_start.year, range_start.month, range_start.day,
+                        tzinfo=UTC,
+                    ),
+                    period_to=datetime(
+                        range_end.year, range_end.month, range_end.day,
+                        tzinfo=UTC,
+                    ),
+                    page_size=25000,
+                )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Failed to fetch consumption %s to %s: %s",
+                    range_start, range_end, err,
+                )
+                continue
+
+            for reading in consumption:
+                day_key = reading.interval_start.date().isoformat()
+                self._cached_consumption.setdefault(day_key, []).append(
+                    (reading.interval_start, reading.interval_end, reading.consumption)
+                )
+
+        consumption_by_month: dict[str, list[tuple[datetime, datetime, float]]] = {}
+        total_kwh = 0.0
+        for day_key, readings in self._cached_consumption.items():
+            for interval_start, interval_end, kwh in readings:
+                month_key = f"{interval_start.year}-{interval_start.month:02d}"
+                consumption_by_month.setdefault(month_key, []).append(
+                    (interval_start, interval_end, kwh)
+                )
+                total_kwh += kwh
+
+        if not consumption_by_month:
             return TariffComparisonData(
                 months=months, gsp_region=gsp_suffix, updated_at=now.isoformat()
             )
-
-        # Bucket consumption by month
-        consumption_by_month: dict[str, list[tuple[datetime, datetime, float]]] = {}
-        total_kwh = 0.0
-        for reading in consumption:
-            key = f"{reading.interval_start.year}-{reading.interval_start.month:02d}"
-            consumption_by_month.setdefault(key, []).append(
-                (reading.interval_start, reading.interval_end, reading.consumption)
-            )
-            total_kwh += reading.consumption
 
         # Build tariff list: current + configured comparison products
         comparison_products = self.config_entry.options.get(
@@ -276,6 +368,8 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                 is_current=is_current,
             )
 
+            period_end = yesterday + timedelta(days=1)
+
             # For the current tariff, try GraphQL applicable rates first
             rates = None
             if is_current:
@@ -284,7 +378,7 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                         account_number,
                         mpan,
                         start_at=period_start,
-                        end_at=yesterday + timedelta(days=1),
+                        end_at=period_end,
                     )
                     rates = [
                         Rate(
@@ -305,18 +399,16 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                         exc_info=True,
                     )
 
-            # Fall back to REST rates (always used for comparison tariffs)
+            # Fall back to cached REST rates
             if rates is None:
                 try:
-                    rates = await self.client.get_electricity_rates(
-                        product_code,
-                        tariff_code,
-                        period_from=period_start,
-                        period_to=yesterday + timedelta(days=1),
-                        page_size=25000,
+                    rates = await self._get_cached_rates(
+                        product_code, tariff_code, period_start, period_end
                     )
                 except OctopusEnergyNotFoundError:
-                    comparison.error = f"Product {product_code} not found for region {gsp_suffix}"
+                    comparison.error = (
+                        f"Product {product_code} not found for region {gsp_suffix}"
+                    )
                     _LOGGER.warning(
                         "Tariff %s not found for GSP %s, skipping",
                         product_code,
@@ -335,12 +427,8 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                     continue
 
             try:
-                standing_charges = await self.client.get_electricity_standing_charges(
-                    product_code,
-                    tariff_code,
-                    period_from=period_start,
-                    period_to=yesterday + timedelta(days=1),
-                    page_size=25000,
+                standing_charges = await self._get_cached_standing(
+                    product_code, tariff_code, period_start, period_end
                 )
             except Exception:
                 standing_charges = []
