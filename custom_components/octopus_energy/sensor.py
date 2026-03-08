@@ -399,7 +399,7 @@ class TariffComparisonSensor(
         if not data or not data.tariffs:
             return None
 
-        return {
+        attrs: dict[str, Any] = {
             "tariffs": [
                 {
                     "product_code": t.product_code,
@@ -428,6 +428,21 @@ class TariffComparisonSensor(
             "gsp_region": data.gsp_region,
             "updated_at": data.updated_at,
         }
+
+        if data.octopus_comparisons:
+            attrs["octopus_comparison"] = {
+                "current_cost": data.octopus_current_cost,
+                "alternatives": [
+                    {
+                        "product_code": c.product_code,
+                        "tariff_code": c.tariff_code,
+                        "cost": c.cost_inc_vat,
+                    }
+                    for c in data.octopus_comparisons
+                ],
+            }
+
+        return attrs
 
 
 class SolarEstimateSensor(

@@ -6,10 +6,17 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from aiooctopusenergy import Consumption, Rate, StandingCharge
+from aiooctopusenergy import (
+    ApplicableRate,
+    Consumption,
+    Rate,
+    StandingCharge,
+    TariffCostComparison,
+)
 
 from custom_components.octopus_energy.comparison_coordinator import (
     MonthlyTariffCost,
+    TariffComparisonData,
     _compute_monthly_costs,
 )
 from custom_components.octopus_energy.coordinator import (
@@ -176,3 +183,117 @@ class TestMissingConsumption:
         assert m.unit_cost == 0.10
         assert m.standing_cost == 0.0
         assert m.total_cost == 0.10
+
+
+class TestApplicableRateConversion:
+    """Test that GraphQL ApplicableRate objects convert to Rate for cost computation."""
+
+    def test_applicable_rates_as_rate_objects(self):
+        """ApplicableRate converted to Rate with value_exc_vat=0 works in cost calc."""
+        month_start = datetime(2025, 10, 1, tzinfo=UTC)
+
+        applicable_rates = [
+            ApplicableRate(
+                value_inc_vat=15.0,
+                valid_from=month_start,
+                valid_to=month_start + timedelta(minutes=30),
+            ),
+        ]
+
+        # Convert ApplicableRate to Rate (as the coordinator does)
+        rates = [
+            Rate(
+                value_exc_vat=0.0,
+                value_inc_vat=ar.value_inc_vat,
+                valid_from=ar.valid_from,
+                valid_to=ar.valid_to,
+            )
+            for ar in applicable_rates
+        ]
+
+        consumption_by_month = {
+            "2025-10": [
+                (month_start, month_start + timedelta(minutes=30), 2.0),
+            ],
+        }
+
+        result = _compute_monthly_costs(
+            consumption_by_month, rates, [], ["2025-10"]
+        )
+
+        m = result[0]
+        # 2.0 kWh * 15p/kWh = 30p = £0.30
+        assert m.unit_cost == 0.30
+        assert m.consumption_kwh == 2.0
+
+    def test_multiple_applicable_rates(self):
+        """Multiple half-hourly applicable rates match correctly."""
+        t0 = datetime(2025, 10, 1, 0, 0, tzinfo=UTC)
+        t1 = datetime(2025, 10, 1, 0, 30, tzinfo=UTC)
+        t2 = datetime(2025, 10, 1, 1, 0, tzinfo=UTC)
+
+        applicable_rates = [
+            ApplicableRate(value_inc_vat=5.0, valid_from=t0, valid_to=t1),
+            ApplicableRate(value_inc_vat=25.0, valid_from=t1, valid_to=t2),
+        ]
+
+        rates = [
+            Rate(
+                value_exc_vat=0.0,
+                value_inc_vat=ar.value_inc_vat,
+                valid_from=ar.valid_from,
+                valid_to=ar.valid_to,
+            )
+            for ar in applicable_rates
+        ]
+
+        consumption_by_month = {
+            "2025-10": [
+                (t0, t1, 1.0),  # 1 kWh at 5p
+                (t1, t2, 1.0),  # 1 kWh at 25p
+            ],
+        }
+
+        result = _compute_monthly_costs(
+            consumption_by_month, rates, [], ["2025-10"]
+        )
+
+        m = result[0]
+        # 1*5 + 1*25 = 30p = £0.30
+        assert m.unit_cost == 0.30
+
+
+class TestTariffComparisonDataSmartComparison:
+    """Test TariffComparisonData stores smart comparison fields."""
+
+    def test_default_smart_comparison_fields(self):
+        """Smart comparison fields default to None."""
+        data = TariffComparisonData()
+        assert data.octopus_current_cost is None
+        assert data.octopus_comparisons is None
+
+    def test_stores_smart_comparison(self):
+        """Smart comparison data is stored correctly."""
+        comparisons = [
+            TariffCostComparison(
+                tariff_code="E-1R-AGILE-24-10-01-C",
+                product_code="AGILE-24-10-01",
+                cost_inc_vat=150.50,
+            ),
+            TariffCostComparison(
+                tariff_code="E-1R-VAR-22-11-01-C",
+                product_code="VAR-22-11-01",
+                cost_inc_vat=180.25,
+            ),
+        ]
+
+        data = TariffComparisonData(
+            octopus_current_cost=165.00,
+            octopus_comparisons=comparisons,
+        )
+
+        assert data.octopus_current_cost == 165.00
+        assert len(data.octopus_comparisons) == 2
+        assert data.octopus_comparisons[0].product_code == "AGILE-24-10-01"
+        assert data.octopus_comparisons[0].cost_inc_vat == 150.50
+        assert data.octopus_comparisons[1].product_code == "VAR-22-11-01"

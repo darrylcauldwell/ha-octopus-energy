@@ -9,13 +9,17 @@ import logging
 
 from aiooctopusenergy import (
     OctopusEnergyClient,
+    OctopusEnergyGraphQLClient,
     OctopusEnergyNotFoundError,
+    Rate,
+    TariffCostComparison,
 )
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CONF_ACCOUNT_NUMBER,
     CONF_COMPARISON_MONTHS,
     CONF_COMPARISON_PRODUCTS,
     DEFAULT_COMPARISON_MONTHS,
@@ -79,6 +83,8 @@ class TariffComparisonData:
     total_consumption_kwh: float = 0.0
     gsp_region: str = ""
     updated_at: str = ""
+    octopus_current_cost: float | None = None
+    octopus_comparisons: list[TariffCostComparison] | None = None
 
 
 def _compute_monthly_costs(
@@ -155,6 +161,7 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         config_entry: OctopusEnergyConfigEntry,
         client: OctopusEnergyClient,
         main_coordinator: OctopusEnergyCoordinator,
+        graphql_client: OctopusEnergyGraphQLClient,
     ) -> None:
         """Initialize the comparison coordinator."""
         super().__init__(
@@ -166,6 +173,7 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         )
         self.client = client
         self._main = main_coordinator
+        self._graphql_client = graphql_client
 
     async def _async_update_data(self) -> TariffComparisonData:
         """Fetch consumption and re-price against comparison tariffs."""
@@ -187,6 +195,7 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         serial = import_meter.serial_number
         gsp_suffix = _extract_gsp_suffix(import_meter.tariff_code)
         current_product = import_meter.product_code
+        account_number = self.config_entry.data[CONF_ACCOUNT_NUMBER]
 
         # Determine comparison period
         num_months = self.config_entry.options.get(
@@ -267,14 +276,65 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                 is_current=is_current,
             )
 
+            # For the current tariff, try GraphQL applicable rates first
+            rates = None
+            if is_current:
+                try:
+                    applicable = await self._graphql_client.get_applicable_rates(
+                        account_number,
+                        mpan,
+                        start_at=period_start,
+                        end_at=yesterday + timedelta(days=1),
+                    )
+                    rates = [
+                        Rate(
+                            value_exc_vat=0.0,
+                            value_inc_vat=ar.value_inc_vat,
+                            valid_from=ar.valid_from,
+                            valid_to=ar.valid_to,
+                        )
+                        for ar in applicable
+                    ]
+                    _LOGGER.debug(
+                        "Using GraphQL applicable rates for current tariff (%d rates)",
+                        len(rates),
+                    )
+                except Exception:
+                    _LOGGER.warning(
+                        "GraphQL applicable rates failed, falling back to REST",
+                        exc_info=True,
+                    )
+
+            # Fall back to REST rates (always used for comparison tariffs)
+            if rates is None:
+                try:
+                    rates = await self.client.get_electricity_rates(
+                        product_code,
+                        tariff_code,
+                        period_from=period_start,
+                        period_to=yesterday + timedelta(days=1),
+                        page_size=25000,
+                    )
+                except OctopusEnergyNotFoundError:
+                    comparison.error = f"Product {product_code} not found for region {gsp_suffix}"
+                    _LOGGER.warning(
+                        "Tariff %s not found for GSP %s, skipping",
+                        product_code,
+                        gsp_suffix,
+                    )
+                    tariffs.append(comparison)
+                    continue
+                except Exception:
+                    comparison.error = f"Failed to fetch rates for {product_code}"
+                    _LOGGER.warning(
+                        "Failed to fetch rates for %s, skipping",
+                        product_code,
+                        exc_info=True,
+                    )
+                    tariffs.append(comparison)
+                    continue
+
             try:
-                rates = await self.client.get_electricity_rates(
-                    product_code,
-                    tariff_code,
-                    period_from=period_start,
-                    period_to=yesterday + timedelta(days=1),
-                    page_size=25000,
-                )
                 standing_charges = await self.client.get_electricity_standing_charges(
                     product_code,
                     tariff_code,
@@ -282,24 +342,13 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                     period_to=yesterday + timedelta(days=1),
                     page_size=25000,
                 )
-            except OctopusEnergyNotFoundError:
-                comparison.error = f"Product {product_code} not found for region {gsp_suffix}"
-                _LOGGER.warning(
-                    "Tariff %s not found for GSP %s, skipping",
-                    product_code,
-                    gsp_suffix,
-                )
-                tariffs.append(comparison)
-                continue
             except Exception:
-                comparison.error = f"Failed to fetch rates for {product_code}"
+                standing_charges = []
                 _LOGGER.warning(
-                    "Failed to fetch rates for %s, skipping",
+                    "Failed to fetch standing charges for %s",
                     product_code,
                     exc_info=True,
                 )
-                tariffs.append(comparison)
-                continue
 
             monthly_costs = _compute_monthly_costs(
                 consumption_by_month, rates, standing_charges, months
@@ -310,10 +359,26 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             )
             tariffs.append(comparison)
 
+        # Fetch Octopus smart tariff comparison
+        octopus_current_cost: float | None = None
+        octopus_comparisons: list[TariffCostComparison] | None = None
+        try:
+            smart = await self._graphql_client.get_smart_tariff_comparison(
+                account_number=account_number, mpan=mpan
+            )
+            octopus_current_cost = smart.get("current_cost")
+            octopus_comparisons = smart.get("comparisons")
+        except Exception:
+            _LOGGER.warning(
+                "Smart tariff comparison unavailable", exc_info=True
+            )
+
         return TariffComparisonData(
             tariffs=tariffs,
             months=months,
             total_consumption_kwh=round(total_kwh, 2),
             gsp_region=gsp_suffix,
             updated_at=now.isoformat(),
+            octopus_current_cost=octopus_current_cost,
+            octopus_comparisons=octopus_comparisons,
         )
