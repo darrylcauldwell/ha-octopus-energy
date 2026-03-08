@@ -204,7 +204,7 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
         for prop in self._account.properties:
             for ep in prop.electricity_meter_points:
                 agreement = _get_active_agreement(ep.agreements)
-                if not agreement or not ep.meters:
+                if not agreement or not ep.meters or not agreement.tariff_code:
                     continue
                 tariff_code = agreement.tariff_code
                 product_code = _extract_product_code(tariff_code)
@@ -220,7 +220,7 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
 
             for gp in prop.gas_meter_points:
                 agreement = _get_active_agreement(gp.agreements)
-                if not agreement or not gp.meters:
+                if not agreement or not gp.meters or not agreement.tariff_code:
                     continue
                 tariff_code = agreement.tariff_code
                 product_code = _extract_product_code(tariff_code)
