@@ -12,6 +12,8 @@ CONF_POSTCODE = "postcode"
 DEFAULT_UPDATE_INTERVAL = 30
 DEFAULT_COMPARISON_MONTHS = 6
 
+CARBON_INTENSITY_API_URL = "https://api.carbonintensity.org.uk/intensity/date/{date}"
+
 # Curated tariffs for comparison (product codes)
 DEFAULT_COMPARISON_PRODUCTS: list[str] = [
     "AGILE-24-10-01",

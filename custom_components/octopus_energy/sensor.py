@@ -27,6 +27,7 @@ from .comparison_coordinator import (
 from .const import DOMAIN
 from .solar_coordinator import SolarEstimateCoordinator, SolarEstimateData
 from .coordinator import (
+    CarbonIntensityPeriod,
     MeterData,
     OctopusEnergyConfigEntry,
     OctopusEnergyCoordinator,
@@ -178,6 +179,114 @@ def _get_next_rate_attrs(meter: MeterData) -> dict[str, Any]:
     return {}
 
 
+UNIT_GRAMS_CO2_PER_KWH = "gCO2/kWh"
+
+
+def _enrich_charges_with_carbon(
+    charges: list[dict[str, Any]],
+    carbon_data: list[CarbonIntensityPeriod],
+) -> dict[str, Any]:
+    """Match charges to carbon periods by timestamp and add carbon data."""
+    if not charges or not carbon_data:
+        return {}
+
+    carbon_by_start = {p.from_dt.isoformat(): p for p in carbon_data}
+
+    total_carbon_grams = 0.0
+    total_kwh = 0.0
+    high_carbon_kwh = 0.0
+    low_carbon_kwh = 0.0
+
+    for charge in charges:
+        start_iso = charge["start"]
+        period = carbon_by_start.get(start_iso)
+        if period:
+            intensity = period.actual if period.actual is not None else period.forecast
+            charge["carbon_intensity"] = intensity
+            charge["carbon_index"] = period.index
+            kwh = charge.get("consumption", 0)
+            charge["carbon_grams"] = round(kwh * intensity, 1)
+            total_carbon_grams += kwh * intensity
+            total_kwh += kwh
+            if period.index in ("high", "very high"):
+                high_carbon_kwh += kwh
+            elif period.index in ("low", "very low"):
+                low_carbon_kwh += kwh
+
+    if total_kwh == 0:
+        return {}
+
+    weighted_avg = round(total_carbon_grams / total_kwh, 1) if total_kwh else 0
+
+    return {
+        "carbon_summary": {
+            "total_grams_co2": round(total_carbon_grams, 1),
+            "weighted_avg_intensity": weighted_avg,
+            "high_carbon_kwh": round(high_carbon_kwh, 2),
+            "low_carbon_kwh": round(low_carbon_kwh, 2),
+            "high_carbon_pct": round(high_carbon_kwh / total_kwh * 100, 1),
+            "low_carbon_pct": round(low_carbon_kwh / total_kwh * 100, 1),
+        },
+        "optimization": _compute_optimal_windows(charges, carbon_data),
+    }
+
+
+def _compute_optimal_windows(
+    charges: list[dict[str, Any]],
+    carbon_data: list[CarbonIntensityPeriod],
+) -> dict[str, Any]:
+    """Find cheapest and greenest 2h windows from yesterday's data."""
+    # Build sorted list of periods with both rate and carbon data
+    carbon_by_start = {p.from_dt.isoformat(): p for p in carbon_data}
+    periods = []
+    for charge in charges:
+        period = carbon_by_start.get(charge["start"])
+        rate = charge.get("rate")
+        if period and rate is not None:
+            intensity = period.actual if period.actual is not None else period.forecast
+            periods.append({
+                "start": charge["start"],
+                "end": charge["end"],
+                "rate": rate,
+                "carbon_intensity": intensity,
+            })
+
+    if len(periods) < 4:
+        return {}
+
+    # Find best 2h (4 consecutive half-hours) windows
+    best_cost_sum = float("inf")
+    best_cost_window = None
+    best_carbon_sum = float("inf")
+    best_carbon_window = None
+
+    for i in range(len(periods) - 3):
+        window = periods[i : i + 4]
+        cost_sum = sum(p["rate"] for p in window)
+        carbon_sum = sum(p["carbon_intensity"] for p in window)
+        if cost_sum < best_cost_sum:
+            best_cost_sum = cost_sum
+            best_cost_window = window
+        if carbon_sum < best_carbon_sum:
+            best_carbon_sum = carbon_sum
+            best_carbon_window = window
+
+    result: dict[str, Any] = {}
+    if best_cost_window:
+        result["cheapest_2h_window"] = {
+            "start": best_cost_window[0]["start"],
+            "end": best_cost_window[-1]["end"],
+            "avg_rate": round(best_cost_sum / 4, 2),
+        }
+    if best_carbon_window:
+        result["greenest_2h_window"] = {
+            "start": best_carbon_window[0]["start"],
+            "end": best_carbon_window[-1]["end"],
+            "avg_intensity": round(best_carbon_sum / 4, 1),
+        }
+    return result
+
+
 @dataclass(frozen=True, kw_only=True)
 class OctopusEnergySensorDescription(SensorEntityDescription):
     """Describes an Octopus Energy sensor entity."""
@@ -313,6 +422,9 @@ async def async_setup_entry(
     # Add tariff comparison sensor
     entities.append(TariffComparisonSensor(comparison, entry))
 
+    # Add carbon correlation sensor
+    entities.append(CarbonCorrelationSensor(coordinator, entry))
+
     # Add solar estimate sensor if configured
     if runtime_data.solar is not None:
         entities.append(SolarEstimateSensor(runtime_data.solar, entry))
@@ -345,13 +457,24 @@ class OctopusEnergySensor(OctopusEnergyEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return extra state attributes."""
+        """Return extra state attributes, enriched with carbon data for cost sensors."""
         if self.entity_description.attrs_fn is None:
             return None
         meter = self.coordinator.data.meters.get(self._meter_id)
         if meter is None:
             return None
-        return self.entity_description.attrs_fn(meter)
+        attrs = self.entity_description.attrs_fn(meter)
+        # Enrich cost sensors with carbon intensity correlation
+        if (
+            self.entity_description.key.endswith("previous_cost")
+            and "charges" in attrs
+            and self.coordinator.data.carbon_intensity
+        ):
+            carbon_attrs = _enrich_charges_with_carbon(
+                attrs["charges"], self.coordinator.data.carbon_intensity
+            )
+            attrs.update(carbon_attrs)
+        return attrs
 
 
 class TariffComparisonSensor(
@@ -443,6 +566,92 @@ class TariffComparisonSensor(
             }
 
         return attrs
+
+
+class CarbonCorrelationSensor(
+    CoordinatorEntity[OctopusEnergyCoordinator], SensorEntity
+):
+    """Sensor showing weighted average carbon intensity of yesterday's consumption."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "carbon_correlation"
+    _attr_native_unit_of_measurement = UNIT_GRAMS_CO2_PER_KWH
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:molecule-co2"
+
+    def __init__(
+        self,
+        coordinator: OctopusEnergyCoordinator,
+        entry: OctopusEnergyConfigEntry,
+    ) -> None:
+        """Initialize the carbon correlation sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_carbon_correlation"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{entry.entry_id}_carbon")},
+            name="Octopus Energy Carbon Correlation",
+            entry_type=DeviceEntryType.SERVICE,
+            manufacturer="Octopus Energy",
+        )
+
+    def _get_import_meter(self) -> MeterData | None:
+        """Get the non-export electricity meter."""
+        for meter in self.coordinator.data.meters.values():
+            if not meter.is_gas and not meter.is_export:
+                return meter
+        return None
+
+    @property
+    def native_value(self) -> StateType:
+        """Return weighted average carbon intensity of yesterday's consumption."""
+        meter = self._get_import_meter()
+        carbon = self.coordinator.data.carbon_intensity
+        if not meter or not meter.consumption or not carbon:
+            return None
+
+        carbon_by_start = {p.from_dt.isoformat(): p for p in carbon}
+        total_grams = 0.0
+        total_kwh = 0.0
+
+        for reading in meter.consumption:
+            period = carbon_by_start.get(reading.interval_start.isoformat())
+            if period:
+                intensity = (
+                    period.actual if period.actual is not None else period.forecast
+                )
+                total_grams += reading.consumption * intensity
+                total_kwh += reading.consumption
+
+        if total_kwh == 0:
+            return None
+        return round(total_grams / total_kwh, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return carbon summary and optimization insights."""
+        meter = self._get_import_meter()
+        carbon = self.coordinator.data.carbon_intensity
+        if not meter or not meter.consumption or not carbon:
+            return None
+
+        charges = []
+        for reading in sorted(meter.consumption, key=lambda c: c.interval_start):
+            rate_value = None
+            for rate in meter.rates:
+                if rate.valid_from <= reading.interval_start and (
+                    rate.valid_to is None or rate.valid_to >= reading.interval_end
+                ):
+                    rate_value = rate.value_inc_vat
+                    break
+            charges.append({
+                "start": reading.interval_start.isoformat(),
+                "end": reading.interval_end.isoformat(),
+                "consumption": reading.consumption,
+                "rate": rate_value,
+            })
+
+        return _enrich_charges_with_carbon(charges, carbon)
 
 
 class SolarEstimateSensor(
