@@ -149,20 +149,33 @@ def _get_cost_attrs(meter: MeterData) -> dict[str, Any]:
 
 
 def _get_rate_attrs(meter: MeterData) -> dict[str, Any]:
-    """Get rate details as attributes."""
+    """Get rate details as attributes including upcoming rates."""
     now = datetime.now(UTC)
+    attrs: dict[str, Any] = {"tariff_code": meter.tariff_code}
     for rate in meter.rates:
         if rate.valid_from <= now and (
             rate.valid_to is None or rate.valid_to > now
         ):
-            attrs: dict[str, Any] = {
-                "start": rate.valid_from.isoformat(),
-                "tariff_code": meter.tariff_code,
-            }
+            attrs["start"] = rate.valid_from.isoformat()
             if rate.valid_to:
                 attrs["end"] = rate.valid_to.isoformat()
-            return attrs
-    return {"tariff_code": meter.tariff_code}
+            break
+
+    # Include all upcoming rates (current + future) for dashboard display
+    upcoming = sorted(
+        [r for r in meter.rates if r.valid_to is None or r.valid_to > now],
+        key=lambda r: r.valid_from,
+    )
+    if upcoming:
+        attrs["upcoming_rates"] = [
+            {
+                "start": r.valid_from.isoformat(),
+                "end": r.valid_to.isoformat() if r.valid_to else None,
+                "rate": r.value_inc_vat,
+            }
+            for r in upcoming
+        ]
+    return attrs
 
 
 def _get_next_rate_attrs(meter: MeterData) -> dict[str, Any]:
@@ -540,6 +553,21 @@ class TariffComparisonSensor(
                             "standing_cost": m.standing_cost,
                             "total_cost": m.total_cost,
                             "consumption_kwh": m.consumption_kwh,
+                            **(
+                                {
+                                    "slots": [
+                                        {
+                                            "start": s.start,
+                                            "consumption_kwh": s.consumption_kwh,
+                                            "rate": s.rate,
+                                            "cost": s.cost,
+                                        }
+                                        for s in m.slots
+                                    ]
+                                }
+                                if t.is_current and m.slots
+                                else {}
+                            ),
                         }
                         for m in t.months
                     ],

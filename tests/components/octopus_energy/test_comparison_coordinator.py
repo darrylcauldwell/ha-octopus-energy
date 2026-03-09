@@ -16,6 +16,7 @@ from aiooctopusenergy import (
 
 from custom_components.octopus_energy.comparison_coordinator import (
     MonthlyTariffCost,
+    SlotCost,
     TariffComparisonData,
     _compute_monthly_costs,
     _find_missing_ranges,
@@ -97,6 +98,89 @@ class TestComputeMonthlyCostFlatRate:
         assert m.standing_cost == 0.30  # 30p * 1 day = 30p = £0.30
         assert m.total_cost == 0.40
         assert m.consumption_kwh == 1.0
+        assert m.slots == []
+
+    def test_single_month_with_slots(self):
+        """When include_slots=True, per-slot data is retained."""
+        month_start = datetime(2025, 10, 1, tzinfo=UTC)
+
+        consumption_by_month = {
+            "2025-10": [
+                (month_start, month_start + timedelta(minutes=30), 1.0),
+            ],
+        }
+
+        rates = [
+            Rate(
+                value_exc_vat=9.52,
+                value_inc_vat=10.0,
+                valid_from=datetime(2025, 10, 1, tzinfo=UTC),
+                valid_to=None,
+            ),
+        ]
+
+        result = _compute_monthly_costs(
+            consumption_by_month, rates, [], ["2025-10"], include_slots=True
+        )
+
+        m = result[0]
+        assert len(m.slots) == 1
+        s = m.slots[0]
+        assert s.start == month_start.isoformat()
+        assert s.consumption_kwh == 1.0
+        assert s.rate == 10.0
+        assert s.cost == 0.1  # 1.0 kWh * 10p / 100 = £0.10
+
+
+class TestSlotDataVariableRates:
+    def test_slots_capture_per_interval_rate(self):
+        """Slots record the correct rate for each half-hour."""
+        t0 = datetime(2025, 10, 1, 0, 0, tzinfo=UTC)
+        t1 = datetime(2025, 10, 1, 0, 30, tzinfo=UTC)
+        t2 = datetime(2025, 10, 1, 1, 0, tzinfo=UTC)
+
+        consumption_by_month = {
+            "2025-10": [
+                (t0, t1, 0.5),
+                (t1, t2, 0.3),
+            ],
+        }
+
+        rates = [
+            Rate(value_exc_vat=0, value_inc_vat=20.0, valid_from=t0, valid_to=t1),
+            Rate(value_exc_vat=0, value_inc_vat=10.0, valid_from=t1, valid_to=t2),
+        ]
+
+        result = _compute_monthly_costs(
+            consumption_by_month, rates, [], ["2025-10"], include_slots=True
+        )
+
+        m = result[0]
+        assert len(m.slots) == 2
+        assert m.slots[0].rate == 20.0
+        assert m.slots[0].consumption_kwh == 0.5
+        assert m.slots[0].cost == 0.1  # 0.5 * 20 / 100 = £0.10
+        assert m.slots[1].rate == 10.0
+        assert m.slots[1].consumption_kwh == 0.3
+
+    def test_slots_not_included_by_default(self):
+        """Without include_slots, slots list is empty."""
+        t0 = datetime(2025, 10, 1, 0, 0, tzinfo=UTC)
+        t1 = datetime(2025, 10, 1, 0, 30, tzinfo=UTC)
+
+        consumption_by_month = {
+            "2025-10": [(t0, t1, 1.0)],
+        }
+
+        rates = [
+            Rate(value_exc_vat=0, value_inc_vat=10.0, valid_from=t0, valid_to=t1),
+        ]
+
+        result = _compute_monthly_costs(
+            consumption_by_month, rates, [], ["2025-10"]
+        )
+
+        assert result[0].slots == []
 
 
 class TestComputeMonthlyCostVariableRate:

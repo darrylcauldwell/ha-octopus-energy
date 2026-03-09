@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -11,6 +12,7 @@ from aiooctopusenergy import (
     OctopusEnergyClient,
     OctopusEnergyGraphQLClient,
     OctopusEnergyNotFoundError,
+    OctopusEnergyRateLimitError,
     Rate,
     TariffCostComparison,
 )
@@ -49,6 +51,16 @@ PRODUCT_DISPLAY_NAMES: dict[str, str] = {
 
 
 @dataclass
+class SlotCost:
+    """Cost for a single half-hourly slot."""
+
+    start: str  # ISO 8601
+    consumption_kwh: float
+    rate: float  # p/kWh inc VAT
+    cost: float  # GBP
+
+
+@dataclass
 class MonthlyTariffCost:
     """Cost breakdown for a single month on a single tariff."""
 
@@ -59,6 +71,7 @@ class MonthlyTariffCost:
     standing_cost: float  # GBP
     total_cost: float  # GBP
     consumption_kwh: float
+    slots: list[SlotCost] = field(default_factory=list)
 
 
 @dataclass
@@ -92,6 +105,8 @@ def _compute_monthly_costs(
     rates: list,
     standing_charges: list,
     months: list[str],
+    *,
+    include_slots: bool = False,
 ) -> list[MonthlyTariffCost]:
     """Compute monthly costs by matching consumption to rates."""
     # Build sorted rate lookup (ascending by valid_from)
@@ -106,6 +121,7 @@ def _compute_monthly_costs(
         unit_cost_pence = 0.0
         total_kwh = 0.0
         days_seen: set[int] = set()
+        slots: list[SlotCost] = []
 
         for interval_start, interval_end, kwh in readings:
             days_seen.add(interval_start.day)
@@ -128,6 +144,18 @@ def _compute_monthly_costs(
             if matched_rate is not None:
                 unit_cost_pence += kwh * matched_rate
 
+            if include_slots:
+                slot_rate = matched_rate if matched_rate is not None else 0.0
+                slot_cost = round(kwh * slot_rate / 100.0, 4)
+                slots.append(
+                    SlotCost(
+                        start=interval_start.isoformat(),
+                        consumption_kwh=round(kwh, 4),
+                        rate=round(slot_rate, 2),
+                        cost=slot_cost,
+                    )
+                )
+
         # Standing charge: pence/day * days with data
         days_with_data = len(days_seen)
         standing_pence = 0.0
@@ -144,6 +172,7 @@ def _compute_monthly_costs(
                 standing_cost=round(standing_pence / 100.0, 2),
                 total_cost=round((unit_cost_pence + standing_pence) / 100.0, 2),
                 consumption_kwh=round(total_kwh, 2),
+                slots=slots if include_slots else [],
             )
         )
 
@@ -215,7 +244,7 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             return self._cached_rates[product_code]
         rates = await self.client.get_electricity_rates(
             product_code, tariff_code,
-            period_from=period_start, period_to=period_end, page_size=25000,
+            period_from=period_start, period_to=period_end, page_size=1500,
         )
         self._cached_rates[product_code] = rates
         return rates
@@ -229,7 +258,7 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             return self._cached_standing[product_code]
         charges = await self.client.get_electricity_standing_charges(
             product_code, tariff_code,
-            period_from=period_start, period_to=period_end, page_size=25000,
+            period_from=period_start, period_to=period_end, page_size=1500,
         )
         self._cached_standing[product_code] = charges
         return charges
@@ -301,24 +330,52 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             len(missing_ranges),
         )
 
+        # Split long ranges into 14-day chunks to avoid rate limits
+        _MAX_CHUNK_DAYS = 14
+        _MAX_CHUNKS_PER_CYCLE = 3
+        _INTER_REQUEST_DELAY = 3  # seconds
+
+        chunks: list[tuple[date, date]] = []
         for range_start, range_end in missing_ranges:
+            cursor = range_start
+            while cursor < range_end:
+                chunk_end = min(cursor + timedelta(days=_MAX_CHUNK_DAYS), range_end)
+                chunks.append((cursor, chunk_end))
+                cursor = chunk_end
+
+        pending_chunks = chunks[_MAX_CHUNKS_PER_CYCLE:]
+        chunks_to_fetch = chunks[:_MAX_CHUNKS_PER_CYCLE]
+
+        rate_limited = False
+        for i, (chunk_start, chunk_end) in enumerate(chunks_to_fetch):
+            if i > 0:
+                await asyncio.sleep(_INTER_REQUEST_DELAY)
             try:
                 consumption = await self.client.get_electricity_consumption(
                     mpan, serial,
                     period_from=datetime(
-                        range_start.year, range_start.month, range_start.day,
+                        chunk_start.year, chunk_start.month, chunk_start.day,
                         tzinfo=UTC,
                     ),
                     period_to=datetime(
-                        range_end.year, range_end.month, range_end.day,
+                        chunk_end.year, chunk_end.month, chunk_end.day,
                         tzinfo=UTC,
                     ),
-                    page_size=25000,
+                    page_size=1500,
+                    page_delay=1.0,
                 )
+            except OctopusEnergyRateLimitError:
+                _LOGGER.warning(
+                    "Rate limited fetching consumption %s to %s, "
+                    "backing off until next cycle",
+                    chunk_start, chunk_end,
+                )
+                rate_limited = True
+                break
             except Exception as err:
                 _LOGGER.warning(
                     "Failed to fetch consumption %s to %s: %s",
-                    range_start, range_end, err,
+                    chunk_start, chunk_end, err,
                 )
                 continue
 
@@ -327,6 +384,22 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                 self._cached_consumption.setdefault(day_key, []).append(
                     (reading.interval_start, reading.interval_end, reading.consumption)
                 )
+
+        # Dynamic interval: back off on 429, drip-feed when chunks remain,
+        # settle to 24h when complete
+        if rate_limited:
+            self.update_interval = timedelta(minutes=30)
+            _LOGGER.debug(
+                "Rate limited — next backfill attempt in 30m",
+            )
+        elif pending_chunks:
+            self.update_interval = timedelta(minutes=10)
+            _LOGGER.debug(
+                "Backfill incomplete (%d chunks remaining), next update in 10m",
+                len(pending_chunks),
+            )
+        else:
+            self.update_interval = COMPARISON_UPDATE_INTERVAL
 
         consumption_by_month: dict[str, list[tuple[datetime, datetime, float]]] = {}
         total_kwh = 0.0
@@ -354,7 +427,9 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
 
         tariffs: list[TariffComparison] = []
 
-        for product_code in product_codes:
+        for prod_idx, product_code in enumerate(product_codes):
+            if prod_idx > 0:
+                await asyncio.sleep(_INTER_REQUEST_DELAY)
             is_current = product_code == current_product
             tariff_code = _build_tariff_code(product_code, gsp_suffix)
             display_name = PRODUCT_DISPLAY_NAMES.get(product_code, product_code)
@@ -439,7 +514,8 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                 )
 
             monthly_costs = _compute_monthly_costs(
-                consumption_by_month, rates, standing_charges, months
+                consumption_by_month, rates, standing_charges, months,
+                include_slots=is_current,
             )
             comparison.months = monthly_costs
             comparison.total_cost = round(
