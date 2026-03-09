@@ -250,10 +250,11 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                     continue
                 tariff_code = agreement.tariff_code
                 product_code = _extract_product_code(tariff_code)
-                meter_id = f"{ep.mpan}_{ep.meters[0].serial_number}"
+                active_meter = ep.meters[-1]
+                meter_id = f"{ep.mpan}_{active_meter.serial_number}"
                 meters[meter_id] = MeterData(
                     meter_id=meter_id,
-                    serial_number=ep.meters[0].serial_number,
+                    serial_number=active_meter.serial_number,
                     tariff_code=tariff_code,
                     product_code=product_code,
                     is_export=ep.is_export,
@@ -266,10 +267,11 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                     continue
                 tariff_code = agreement.tariff_code
                 product_code = _extract_product_code(tariff_code)
-                meter_id = f"{gp.mprn}_{gp.meters[0].serial_number}"
+                gas_meter = gp.meters[0]
+                meter_id = f"{gp.mprn}_{gas_meter.serial_number}"
                 meters[meter_id] = MeterData(
                     meter_id=meter_id,
-                    serial_number=gp.meters[0].serial_number,
+                    serial_number=gas_meter.serial_number,
                     tariff_code=tariff_code,
                     product_code=product_code,
                     is_export=False,
@@ -280,18 +282,27 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
         tasks: list = []
         task_map: list[tuple[str, str]] = []  # (meter_id, category)
 
+        # Limit rate fetches to a 3-day window (yesterday → tomorrow)
+        # to avoid paginating through years of Agile half-hourly rates.
+        rates_from = yesterday - timedelta(days=1)
+        rates_to = now + timedelta(days=1)
+
         for meter_id, meter in meters.items():
             if not self._should_fetch_rates(meter, now):
                 _LOGGER.debug("Cache hit: rates for %s", meter_id)
                 continue
             if meter.is_gas:
                 tasks.append(
-                    self.client.get_gas_rates(meter.product_code, meter.tariff_code)
+                    self.client.get_gas_rates(
+                        meter.product_code, meter.tariff_code,
+                        period_from=rates_from, period_to=rates_to,
+                    )
                 )
             else:
                 tasks.append(
                     self.client.get_electricity_rates(
-                        meter.product_code, meter.tariff_code
+                        meter.product_code, meter.tariff_code,
+                        period_from=rates_from, period_to=rates_to,
                     )
                 )
             task_map.append((meter_id, "rates"))
