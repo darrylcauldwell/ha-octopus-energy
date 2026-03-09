@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import logging
@@ -59,20 +60,20 @@ async def async_setup_entry(
         api_key=api_key, session=session
     )
 
-    # Comparison and solar coordinators are non-blocking — they make many API
-    # calls (rates for 5 tariffs, large consumption fetch, GraphQL queries)
-    # and must not trigger 429 rate limits that would block the core
-    # coordinator from loading.  They schedule their first refresh in the
-    # background via async_refresh() instead of async_config_entry_first_refresh().
+    # Stagger secondary coordinators to avoid triggering API rate limits
+    # on restart.  The main coordinator fires first (above), then we wait
+    # before starting comparison and solar fetches.
     comparison = TariffComparisonCoordinator(
         hass, entry, client, coordinator, graphql_client
     )
+    await asyncio.sleep(10)
     await comparison.async_refresh()
 
     solar: SolarEstimateCoordinator | None = None
     postcode = entry.options.get(CONF_POSTCODE)
     if postcode:
         solar = SolarEstimateCoordinator(hass, graphql_client, postcode)
+        await asyncio.sleep(10)
         await solar.async_refresh()
 
     entry.runtime_data = OctopusEnergyRuntimeData(
