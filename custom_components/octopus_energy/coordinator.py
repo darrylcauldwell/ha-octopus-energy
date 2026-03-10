@@ -29,6 +29,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -41,6 +42,9 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+CACHE_STORAGE_KEY = f"{DOMAIN}.cache"
+CACHE_STORAGE_VERSION = 1
 
 type OctopusEnergyConfigEntry = ConfigEntry["OctopusEnergyRuntimeData"]
 
@@ -131,6 +135,18 @@ class OctopusEnergyRuntimeData:
     solar: SolarEstimateCoordinator | None = None
 
 
+def _filter_latest_day(consumption: list[Consumption]) -> list[Consumption]:
+    """Keep only the most recent calendar day from a multi-day result.
+
+    The Octopus REST API lags 1-2 days, so we fetch a 3-day window
+    and return whichever day has the latest data.
+    """
+    if not consumption:
+        return consumption
+    latest_date = max(c.interval_start.date() for c in consumption)
+    return [c for c in consumption if c.interval_start.date() == latest_date]
+
+
 class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
     """Coordinator for fetching Octopus Energy data."""
 
@@ -157,11 +173,171 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
         self.client = client
         self._account = account
         self._session = async_get_clientsession(hass)
+        self._store = Store(hass, CACHE_STORAGE_VERSION, CACHE_STORAGE_KEY)
         # Smart cache tracking
         self._consumption_date: date | None = None
         self._standing_charges_date: date | None = None
         self._carbon_date: date | None = None
         self._rates_last_fetched: datetime | None = None
+
+    async def async_load_cache(self) -> None:
+        """Load cached data from persistent storage.
+
+        Called before the first refresh so that sensors have data
+        immediately after a restart, even before the API responds.
+        """
+        stored = await self._store.async_load()
+        if not stored:
+            _LOGGER.debug("No persistent cache found")
+            return
+
+        try:
+            if stored.get("consumption_date"):
+                self._consumption_date = date.fromisoformat(
+                    stored["consumption_date"]
+                )
+            if stored.get("standing_charges_date"):
+                self._standing_charges_date = date.fromisoformat(
+                    stored["standing_charges_date"]
+                )
+            if stored.get("carbon_date"):
+                self._carbon_date = date.fromisoformat(stored["carbon_date"])
+
+            meters: dict[str, MeterData] = {}
+            for meter_id, md in stored.get("meters", {}).items():
+                meters[meter_id] = MeterData(
+                    meter_id=md["meter_id"],
+                    serial_number=md["serial_number"],
+                    tariff_code=md["tariff_code"],
+                    product_code=md["product_code"],
+                    is_export=md["is_export"],
+                    is_gas=md["is_gas"],
+                    consumption=[
+                        Consumption(
+                            consumption=c["consumption"],
+                            interval_start=datetime.fromisoformat(
+                                c["interval_start"]
+                            ),
+                            interval_end=datetime.fromisoformat(
+                                c["interval_end"]
+                            ),
+                        )
+                        for c in md.get("consumption", [])
+                    ],
+                    standing_charges=[
+                        StandingCharge(
+                            value_exc_vat=sc["value_exc_vat"],
+                            value_inc_vat=sc["value_inc_vat"],
+                            valid_from=datetime.fromisoformat(sc["valid_from"]),
+                        )
+                        for sc in md.get("standing_charges", [])
+                    ],
+                    rates=[
+                        Rate(
+                            value_exc_vat=r["value_exc_vat"],
+                            value_inc_vat=r["value_inc_vat"],
+                            valid_from=datetime.fromisoformat(r["valid_from"]),
+                            valid_to=(
+                                datetime.fromisoformat(r["valid_to"])
+                                if r.get("valid_to")
+                                else None
+                            ),
+                        )
+                        for r in md.get("rates", [])
+                    ],
+                )
+
+            carbon = [
+                CarbonIntensityPeriod(
+                    from_dt=datetime.fromisoformat(c["from_dt"]),
+                    to_dt=datetime.fromisoformat(c["to_dt"]),
+                    forecast=c["forecast"],
+                    actual=c.get("actual"),
+                    index=c.get("index", "unknown"),
+                )
+                for c in stored.get("carbon_intensity", [])
+            ]
+
+            self.data = OctopusEnergyData(
+                account=self._account,
+                meters=meters,
+                carbon_intensity=carbon,
+            )
+            _LOGGER.info(
+                "Loaded cached data: %d meters, consumption_date=%s",
+                len(meters),
+                self._consumption_date,
+            )
+        except (KeyError, ValueError, TypeError) as err:
+            _LOGGER.warning("Failed to load cache, starting fresh: %s", err)
+
+    async def _save_cache(self, data: OctopusEnergyData) -> None:
+        """Persist current data to storage so it survives restarts."""
+        stored: dict = {
+            "consumption_date": (
+                self._consumption_date.isoformat()
+                if self._consumption_date
+                else None
+            ),
+            "standing_charges_date": (
+                self._standing_charges_date.isoformat()
+                if self._standing_charges_date
+                else None
+            ),
+            "carbon_date": (
+                self._carbon_date.isoformat() if self._carbon_date else None
+            ),
+            "meters": {},
+            "carbon_intensity": [
+                {
+                    "from_dt": c.from_dt.isoformat(),
+                    "to_dt": c.to_dt.isoformat(),
+                    "forecast": c.forecast,
+                    "actual": c.actual,
+                    "index": c.index,
+                }
+                for c in data.carbon_intensity
+            ],
+        }
+
+        for meter_id, meter in data.meters.items():
+            stored["meters"][meter_id] = {
+                "meter_id": meter.meter_id,
+                "serial_number": meter.serial_number,
+                "tariff_code": meter.tariff_code,
+                "product_code": meter.product_code,
+                "is_export": meter.is_export,
+                "is_gas": meter.is_gas,
+                "consumption": [
+                    {
+                        "consumption": c.consumption,
+                        "interval_start": c.interval_start.isoformat(),
+                        "interval_end": c.interval_end.isoformat(),
+                    }
+                    for c in meter.consumption
+                ],
+                "standing_charges": [
+                    {
+                        "value_exc_vat": sc.value_exc_vat,
+                        "value_inc_vat": sc.value_inc_vat,
+                        "valid_from": sc.valid_from.isoformat(),
+                    }
+                    for sc in meter.standing_charges
+                ],
+                "rates": [
+                    {
+                        "value_exc_vat": r.value_exc_vat,
+                        "value_inc_vat": r.value_inc_vat,
+                        "valid_from": r.valid_from.isoformat(),
+                        "valid_to": (
+                            r.valid_to.isoformat() if r.valid_to else None
+                        ),
+                    }
+                    for r in meter.rates
+                ],
+            }
+
+        await self._store.async_save(stored)
 
     def _should_fetch_rates(self, meter: MeterData, now: datetime) -> bool:
         """Determine whether rates need fetching for a meter."""
@@ -308,16 +484,20 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
             task_map.append((meter_id, "rates"))
 
         if fetch_consumption:
-            yesterday_start = yesterday
-            yesterday_end = yesterday_start + timedelta(days=1)
+            # The Octopus REST API lags 1-2 days behind the app.
+            # Request a 3-day window and keep only the most recent
+            # complete day so sensors show data even when yesterday
+            # hasn't been processed yet.
+            consumption_from = yesterday - timedelta(days=2)
+            consumption_to = yesterday + timedelta(days=1)
             for meter_id, meter in meters.items():
                 if meter.is_gas:
                     tasks.append(
                         self.client.get_gas_consumption(
                             meter_id.split("_")[0],
                             meter.serial_number,
-                            period_from=yesterday_start,
-                            period_to=yesterday_end,
+                            period_from=consumption_from,
+                            period_to=consumption_to,
                         )
                     )
                 else:
@@ -325,8 +505,8 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                         self.client.get_electricity_consumption(
                             meter_id.split("_")[0],
                             meter.serial_number,
-                            period_from=yesterday_start,
-                            period_to=yesterday_end,
+                            period_from=consumption_from,
+                            period_to=consumption_to,
                         )
                     )
                 task_map.append((meter_id, "consumption"))
@@ -386,9 +566,11 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
             carbon = previous.carbon_intensity if previous else []
 
         if not tasks:
-            return OctopusEnergyData(
+            result = OctopusEnergyData(
                 account=self._account, meters=meters, carbon_intensity=carbon
             )
+            await self._save_cache(result)
+            return result
 
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -439,17 +621,34 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                 if category == "rates":
                     meter.rates = result
                 elif category == "consumption":
-                    meter.consumption = result
+                    # We fetched a 3-day window; keep only the most
+                    # recent complete day (the one with the latest data).
+                    meter.consumption = _filter_latest_day(result)
                 elif category == "standing":
                     meter.standing_charges = result
 
         if fetch_consumption and consumption_ok:
-            self._consumption_date = yesterday.date()
+            # Only mark as cached if at least one non-export meter has data.
+            # The API often returns empty results before smart meter readings
+            # are processed (can take several hours after midnight).
+            has_consumption = any(
+                meter.consumption
+                for meter in meters.values()
+                if not meter.is_export
+            )
+            if has_consumption:
+                self._consumption_date = yesterday.date()
+            else:
+                _LOGGER.debug(
+                    "Consumption API returned empty — will retry next cycle"
+                )
         if fetch_standing and standing_ok:
             self._standing_charges_date = today
         if categories & {"rates"}:
             self._rates_last_fetched = now
 
-        return OctopusEnergyData(
+        result = OctopusEnergyData(
             account=self._account, meters=meters, carbon_intensity=carbon
         )
+        await self._save_cache(result)
+        return result

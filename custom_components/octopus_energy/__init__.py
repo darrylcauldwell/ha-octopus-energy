@@ -53,6 +53,7 @@ async def async_setup_entry(
         raise ConfigEntryNotReady from err
 
     coordinator = OctopusEnergyCoordinator(hass, entry, client, account)
+    await coordinator.async_load_cache()
     await coordinator.async_config_entry_first_refresh()
 
     # Always create GraphQL client (used by comparison + solar)
