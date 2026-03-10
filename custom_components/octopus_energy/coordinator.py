@@ -135,6 +135,18 @@ class OctopusEnergyRuntimeData:
     solar: SolarEstimateCoordinator | None = None
 
 
+def _filter_latest_day(consumption: list[Consumption]) -> list[Consumption]:
+    """Keep only the most recent calendar day from a multi-day result.
+
+    The Octopus REST API lags 1-2 days, so we fetch a 3-day window
+    and return whichever day has the latest data.
+    """
+    if not consumption:
+        return consumption
+    latest_date = max(c.interval_start.date() for c in consumption)
+    return [c for c in consumption if c.interval_start.date() == latest_date]
+
+
 class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
     """Coordinator for fetching Octopus Energy data."""
 
@@ -472,16 +484,20 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
             task_map.append((meter_id, "rates"))
 
         if fetch_consumption:
-            yesterday_start = yesterday
-            yesterday_end = yesterday_start + timedelta(days=1)
+            # The Octopus REST API lags 1-2 days behind the app.
+            # Request a 3-day window and keep only the most recent
+            # complete day so sensors show data even when yesterday
+            # hasn't been processed yet.
+            consumption_from = yesterday - timedelta(days=2)
+            consumption_to = yesterday + timedelta(days=1)
             for meter_id, meter in meters.items():
                 if meter.is_gas:
                     tasks.append(
                         self.client.get_gas_consumption(
                             meter_id.split("_")[0],
                             meter.serial_number,
-                            period_from=yesterday_start,
-                            period_to=yesterday_end,
+                            period_from=consumption_from,
+                            period_to=consumption_to,
                         )
                     )
                 else:
@@ -489,8 +505,8 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                         self.client.get_electricity_consumption(
                             meter_id.split("_")[0],
                             meter.serial_number,
-                            period_from=yesterday_start,
-                            period_to=yesterday_end,
+                            period_from=consumption_from,
+                            period_to=consumption_to,
                         )
                     )
                 task_map.append((meter_id, "consumption"))
@@ -605,7 +621,9 @@ class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
                 if category == "rates":
                     meter.rates = result
                 elif category == "consumption":
-                    meter.consumption = result
+                    # We fetched a 3-day window; keep only the most
+                    # recent complete day (the one with the latest data).
+                    meter.consumption = _filter_latest_day(result)
                 elif category == "standing":
                     meter.standing_charges = result
 
