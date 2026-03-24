@@ -46,55 +46,72 @@
   "entity": {
     "sensor": {
       "current_rate": {
-        "name": "Current rate"
+        "name": "Current rate",
+        "description": "Current half-hourly electricity unit rate (inc. VAT)"
       },
       "next_rate": {
-        "name": "Next rate"
+        "name": "Next rate",
+        "description": "Next half-hourly electricity unit rate (inc. VAT)"
       },
       "previous_consumption": {
-        "name": "Previous consumption"
+        "name": "Previous consumption",
+        "description": "Total electricity consumption for yesterday"
       },
       "previous_cost": {
-        "name": "Previous cost"
+        "name": "Previous cost",
+        "description": "Total electricity cost for yesterday"
       },
       "standing_charge": {
-        "name": "Standing charge"
+        "name": "Standing charge",
+        "description": "Current daily standing charge (inc. VAT)"
       },
       "export_current_rate": {
-        "name": "Export current rate"
+        "name": "Export current rate",
+        "description": "Current half-hourly export unit rate (inc. VAT)"
       },
       "export_next_rate": {
-        "name": "Export next rate"
+        "name": "Export next rate",
+        "description": "Next half-hourly export unit rate (inc. VAT)"
       },
       "export_previous_consumption": {
-        "name": "Export previous consumption"
+        "name": "Export previous consumption",
+        "description": "Total electricity export for yesterday"
       },
       "export_previous_cost": {
-        "name": "Export previous cost"
+        "name": "Export previous cost",
+        "description": "Total export payment for yesterday"
       },
       "export_standing_charge": {
-        "name": "Export standing charge"
+        "name": "Export standing charge",
+        "description": "Current daily export standing charge (inc. VAT)"
       },
       "gas_current_rate": {
-        "name": "Gas current rate"
+        "name": "Gas current rate",
+        "description": "Current gas unit rate (inc. VAT)"
       },
       "gas_previous_consumption": {
-        "name": "Gas previous consumption"
+        "name": "Gas previous consumption",
+        "description": "Total gas consumption for yesterday"
       },
       "gas_previous_cost": {
-        "name": "Gas previous cost"
+        "name": "Gas previous cost",
+        "description": "Total gas cost for yesterday"
       },
       "gas_standing_charge": {
-        "name": "Gas standing charge"
+        "name": "Gas standing charge",
+        "description": "Current daily gas standing charge (inc. VAT)"
       },
       "tariff_comparison": {
-        "name": "Tariff comparison"
+        "name": "Tariff comparison",
+        "description": "Cheapest tariff cost from historical comparison analysis"
       },
       "solar_estimate": {
-        "name": "Solar estimate"
+        "name": "Solar estimate",
+        "description": "Estimated solar generation for today"
       },
       "carbon_correlation": {
-        "name": "Carbon correlation"
+        "name": "Carbon correlation",
+        "description": "Weighted average carbon intensity of yesterday's electricity consumption"
       }
     }
   },
