@@ -88,6 +88,25 @@ class TestShouldFetchRates:
         stub.data = OctopusEnergyData(account=MOCK_ACCOUNT, meters={"test_123": prev_meter})
         assert stub._should_fetch_rates(meter, now) is False
 
+    def test_fetch_when_tariff_changes_despite_cached_rates(self):
+        """A tariff switch must not keep pricing with the old tariff's rates."""
+        stub = self._make_coordinator_stub()
+        now = datetime(2026, 11, 8, 0, 5, tzinfo=UTC)
+        stub._rates_last_fetched = now - timedelta(minutes=30)
+
+        prev_meter = self._make_meter()
+        prev_meter.rates = [
+            Rate(value_exc_vat=10.0, value_inc_vat=10.5,
+                 valid_from=datetime(2026, 11, 9, 0, 0, tzinfo=UTC),
+                 valid_to=datetime(2026, 11, 9, 0, 30, tzinfo=UTC)),
+        ]
+        stub.data = OctopusEnergyData(account=MOCK_ACCOUNT, meters={"test_123": prev_meter})
+
+        meter = self._make_meter()
+        meter.tariff_code = "E-1R-GO-VAR-22-10-14-C"
+        meter.product_code = "GO-VAR-22-10-14"
+        assert stub._should_fetch_rates(meter, now) is True
+
     def test_fetch_after_4pm_no_tomorrow_rates(self):
         stub = self._make_coordinator_stub()
         meter = self._make_meter()

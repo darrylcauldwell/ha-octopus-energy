@@ -350,6 +350,10 @@ class OctopusEnergyCoordinator(TimestampDataUpdateCoordinator[OctopusEnergyData]
         prev_meter = previous.meters.get(meter.meter_id)
         if not prev_meter or not prev_meter.rates:
             return True
+        # meter_id survives a tariff switch, so the cached rates may be the
+        # old tariff's even though they still "cover tomorrow"
+        if prev_meter.tariff_code != meter.tariff_code:
+            return True
 
         if meter.is_gas:
             if self._rates_last_fetched and self._rates_last_fetched.date() == now.date():
