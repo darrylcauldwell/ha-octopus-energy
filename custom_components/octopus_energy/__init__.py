@@ -67,6 +67,7 @@ async def async_setup_entry(
     comparison = TariffComparisonCoordinator(
         hass, entry, client, coordinator, graphql_client
     )
+    await comparison.async_load_cache()
     await asyncio.sleep(10)
     await comparison.async_refresh()
 

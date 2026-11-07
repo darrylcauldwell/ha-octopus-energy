@@ -20,6 +20,7 @@ from aiooctopusenergy import (
 )
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -41,6 +42,13 @@ from .coordinator import (
 _LOGGER = logging.getLogger(__name__)
 
 COMPARISON_UPDATE_INTERVAL = timedelta(hours=24)
+
+COMPARISON_CACHE_STORAGE_KEY = f"{DOMAIN}.comparison_cache"
+COMPARISON_CACHE_STORAGE_VERSION = 1
+
+# Octopus publishes smart-meter readings up to a few days late, so the newest
+# days may have been cached part-filled; they are refetched every cycle.
+_RECENT_REFETCH_DAYS = 3
 
 # Display names for well-known products
 PRODUCT_DISPLAY_NAMES: dict[str, str] = {
@@ -210,6 +218,29 @@ def _find_missing_ranges(
     return ranges
 
 
+def _consumption_to_storage(
+    cache: dict[str, list[tuple[datetime, datetime, float]]],
+) -> dict[str, list[list]]:
+    """Serialise the consumption cache for Store."""
+    return {
+        day: [[start.isoformat(), end.isoformat(), kwh] for start, end, kwh in readings]
+        for day, readings in cache.items()
+    }
+
+
+def _consumption_from_storage(
+    stored: dict[str, list[list]],
+) -> dict[str, list[tuple[datetime, datetime, float]]]:
+    """Rebuild the consumption cache from Store data."""
+    return {
+        day: [
+            (datetime.fromisoformat(start), datetime.fromisoformat(end), kwh)
+            for start, end, kwh in readings
+        ]
+        for day, readings in stored.items()
+    }
+
+
 class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
     """Coordinator that computes tariff cost comparisons."""
 
@@ -234,10 +265,27 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         self.client = client
         self._main = main_coordinator
         self._graphql_client = graphql_client
-        # Incremental cache
+        # Incremental cache; consumption is keyed by UTC date and persisted
         self._cached_consumption: dict[str, list[tuple[datetime, datetime, float]]] = {}
+        self._cached_mpan: str | None = None
         self._cached_rates: dict[str, list] = {}
         self._cached_standing: dict[str, list] = {}
+        self._store = Store(
+            hass, COMPARISON_CACHE_STORAGE_VERSION, COMPARISON_CACHE_STORAGE_KEY
+        )
+
+    async def async_load_cache(self) -> None:
+        """Restore the consumption backfill so a restart doesn't redo it."""
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        try:
+            self._cached_consumption = _consumption_from_storage(stored["consumption"])
+            self._cached_mpan = stored["mpan"]
+        except (KeyError, ValueError, TypeError) as err:
+            _LOGGER.warning("Failed to load comparison cache, starting fresh: %s", err)
+            self._cached_consumption = {}
+            self._cached_mpan = None
 
     async def _get_cached_rates(
         self, product_code: str, tariff_code: str,
@@ -319,13 +367,22 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
             expected_dates.append(d)
             d += timedelta(days=1)
 
+        cache_changed = False
+        if mpan != self._cached_mpan:
+            # Readings from another meter would misprice every tariff
+            cache_changed = bool(self._cached_consumption)
+            self._cached_consumption.clear()
+            self._cached_mpan = mpan
+
         valid_keys = {d.isoformat() for d in expected_dates}
         stale = set(self._cached_consumption.keys()) - valid_keys
         for key in stale:
             del self._cached_consumption[key]
+        cache_changed = cache_changed or bool(stale)
 
+        recent_keys = {d.isoformat() for d in expected_dates[-_RECENT_REFETCH_DAYS:]}
         missing_ranges = _find_missing_ranges(
-            expected_dates, set(self._cached_consumption.keys())
+            expected_dates, set(self._cached_consumption.keys()) - recent_keys
         )
 
         _LOGGER.debug(
@@ -383,11 +440,25 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                 )
                 continue
 
+            # UTC keys line up with the UTC chunk boundaries; local (+01:00)
+            # dates would file each UTC day's last hour under the following day
+            fetched: dict[str, list[tuple[datetime, datetime, float]]] = {}
             for reading in consumption:
-                day_key = reading.interval_start.date().isoformat()
-                self._cached_consumption.setdefault(day_key, []).append(
+                day_key = reading.interval_start.astimezone(UTC).date().isoformat()
+                fetched.setdefault(day_key, []).append(
                     (reading.interval_start, reading.interval_end, reading.consumption)
                 )
+            # Whole days are replaced, so refetched recent days don't duplicate
+            self._cached_consumption.update(fetched)
+            cache_changed = True
+
+        if cache_changed:
+            await self._store.async_save(
+                {
+                    "mpan": mpan,
+                    "consumption": _consumption_to_storage(self._cached_consumption),
+                }
+            )
 
         # Dynamic interval: back off on 429, drip-feed when chunks remain,
         # settle to 24h when complete
