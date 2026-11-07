@@ -30,7 +30,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import (
+    TimestampDataUpdateCoordinator,
+    UpdateFailed,
+)
 
 from .const import (
     CARBON_INTENSITY_API_URL,
@@ -147,7 +150,7 @@ def _filter_latest_day(consumption: list[Consumption]) -> list[Consumption]:
     return [c for c in consumption if c.interval_start.date() == latest_date]
 
 
-class OctopusEnergyCoordinator(DataUpdateCoordinator[OctopusEnergyData]):
+class OctopusEnergyCoordinator(TimestampDataUpdateCoordinator[OctopusEnergyData]):
     """Coordinator for fetching Octopus Energy data."""
 
     config_entry: OctopusEnergyConfigEntry
