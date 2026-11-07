@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_left, bisect_right
 import calendar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 import logging
 
 from aiooctopusenergy import (
@@ -109,8 +111,13 @@ def _compute_monthly_costs(
     include_slots: bool = False,
 ) -> list[MonthlyTariffCost]:
     """Compute monthly costs by matching consumption to rates."""
-    # Build sorted rate lookup (ascending by valid_from)
+    # Bisect on POSIX timestamps: a linear scan per reading is O(readings x
+    # rates), and readings (+01:00 in BST) vs rates (UTC) make every datetime
+    # comparison pay for offset normalisation. Six months of Agile took minutes
+    # on a Pi and stalled the event loop long enough for the watchdog to restart
+    # Home Assistant.
     sorted_rates = sorted(rates, key=lambda r: r.valid_from)
+    starts = [r.valid_from.timestamp() for r in sorted_rates]
     monthly_costs: list[MonthlyTariffCost] = []
 
     for month_key in months:
@@ -127,20 +134,17 @@ def _compute_monthly_costs(
             days_seen.add(interval_start.day)
             total_kwh += kwh
 
-            # Find matching rate for this interval
             matched_rate = None
-            for rate in sorted_rates:
-                if rate.valid_from <= interval_start and (
-                    rate.valid_to is None or rate.valid_to >= interval_end
-                ):
-                    matched_rate = rate.value_inc_vat
-                    break
-            if matched_rate is None:
-                # Try closest rate before interval
-                for rate in reversed(sorted_rates):
-                    if rate.valid_from <= interval_start:
-                        matched_rate = rate.value_inc_vat
-                        break
+            i = bisect_right(starts, interval_start.timestamp())
+            if i:
+                # Rates sharing a valid_from (e.g. per payment method) keep API
+                # order and the first of them wins.
+                candidate = sorted_rates[bisect_left(starts, starts[i - 1])]
+                if candidate.valid_to is None or candidate.valid_to >= interval_end:
+                    matched_rate = candidate.value_inc_vat
+                else:
+                    # No rate covers the interval: use the closest one before it
+                    matched_rate = sorted_rates[i - 1].value_inc_vat
             if matched_rate is not None:
                 unit_cost_pence += kwh * matched_rate
 
@@ -513,9 +517,13 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                     exc_info=True,
                 )
 
-            monthly_costs = _compute_monthly_costs(
-                consumption_by_month, rates, standing_charges, months,
-                include_slots=is_current,
+            # CPU-bound over months of half-hourly slots; keep it off the event loop
+            monthly_costs = await self.hass.async_add_executor_job(
+                partial(
+                    _compute_monthly_costs,
+                    consumption_by_month, rates, standing_charges, months,
+                    include_slots=is_current,
+                )
             )
             comparison.months = monthly_costs
             comparison.total_cost = round(

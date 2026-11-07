@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
+import time
 
 import pytest
 
@@ -417,3 +418,114 @@ class TestFindMissingRanges:
 
     def test_empty_input(self):
         assert _find_missing_ranges([], set()) == []
+
+
+def _linear_scan_rate(sorted_rates, interval_start, interval_end):
+    """Reference matcher: the original front-to-back scan."""
+    for rate in sorted_rates:
+        if rate.valid_from <= interval_start and (
+            rate.valid_to is None or rate.valid_to >= interval_end
+        ):
+            return rate.value_inc_vat
+    for rate in reversed(sorted_rates):
+        if rate.valid_from <= interval_start:
+            return rate.value_inc_vat
+    return None
+
+
+def _reference_slot_rates(consumption_by_month, rates):
+    sorted_rates = sorted(rates, key=lambda r: r.valid_from)
+    return [
+        _linear_scan_rate(sorted_rates, start, end) or 0.0
+        for readings in consumption_by_month.values()
+        for start, end, _ in readings
+    ]
+
+
+BST = timezone(timedelta(hours=1))
+
+
+def _half_hours(start, count):
+    return [start + timedelta(minutes=30 * i) for i in range(count)]
+
+
+def _bst_readings(slots):
+    """Readings as the REST API returns them in summer: +01:00 offsets."""
+    by_month = {}
+    for i, s in enumerate(slots):
+        local = s.astimezone(BST)
+        by_month.setdefault(f"{local.year}-{local.month:02d}", []).append(
+            (local, (s + timedelta(minutes=30)).astimezone(BST), 0.1 + (i % 5) / 10)
+        )
+    return by_month
+
+
+class TestRateLookupMatchesLinearScan:
+    """The bisect lookup must price every slot as the original scan did."""
+
+    def _assert_matches(self, consumption_by_month, rates):
+        months = sorted(consumption_by_month)
+        result = _compute_monthly_costs(
+            consumption_by_month, rates, [], months, include_slots=True
+        )
+        got = [s.rate for m in result for s in m.slots]
+        expected = [round(r, 2) for r in _reference_slot_rates(consumption_by_month, rates)]
+        assert got == expected
+
+    def test_half_hourly_rates_with_gap_and_trailing_readings(self):
+        slots = _half_hours(datetime(2026, 7, 30, tzinfo=UTC), 48 * 4)
+        rates = [
+            Rate(value_exc_vat=0, value_inc_vat=5.0 + i % 37,
+                 valid_from=s, valid_to=s + timedelta(minutes=30))
+            for i, s in enumerate(slots[: 48 * 3])
+            if not 60 <= i < 70  # gap: falls back to the closest earlier rate
+        ]
+        # Readings run a day past the last rate, as when rates lag consumption
+        self._assert_matches(_bst_readings(slots), rates)
+
+    def test_flat_tariff_open_ended_latest_rate(self):
+        slots = _half_hours(datetime(2026, 8, 30, tzinfo=UTC), 48 * 4)
+        change = datetime(2026, 9, 1, tzinfo=UTC)
+        rates = [
+            Rate(value_exc_vat=0, value_inc_vat=24.5,
+                 valid_from=datetime(2026, 4, 1, tzinfo=UTC), valid_to=change),
+            Rate(value_exc_vat=0, value_inc_vat=22.1, valid_from=change, valid_to=None),
+        ]
+        self._assert_matches(_bst_readings(slots), rates)
+
+    def test_rates_sharing_valid_from_keep_first(self):
+        slots = _half_hours(datetime(2026, 9, 1, tzinfo=UTC), 48)
+        day = datetime(2026, 9, 1, tzinfo=UTC)
+        rates = [
+            Rate(value_exc_vat=0, value_inc_vat=23.0, valid_from=day,
+                 valid_to=day + timedelta(days=1)),
+            Rate(value_exc_vat=0, value_inc_vat=25.0, valid_from=day,
+                 valid_to=day + timedelta(days=1)),
+        ]
+        self._assert_matches(_bst_readings(slots), rates)
+
+    def test_readings_before_first_rate_are_unpriced(self):
+        slots = _half_hours(datetime(2026, 9, 1, tzinfo=UTC), 4)
+        rates = [
+            Rate(value_exc_vat=0, value_inc_vat=30.0, valid_from=slots[2], valid_to=None),
+        ]
+        result = _compute_monthly_costs(
+            _bst_readings(slots), rates, [], ["2026-09"], include_slots=True
+        )
+        assert [s.rate for s in result[0].slots] == [0.0, 0.0, 30.0, 30.0]
+
+    def test_six_months_of_agile_is_fast(self):
+        """Regression guard: the linear scan took ~24s here (minutes on a Pi)."""
+        slots = _half_hours(datetime(2026, 5, 1, tzinfo=UTC), 48 * 184)
+        rates = [
+            Rate(value_exc_vat=0, value_inc_vat=10.0 + i % 48,
+                 valid_from=s, valid_to=s + timedelta(minutes=30))
+            for i, s in enumerate(slots)
+        ]
+        consumption_by_month = _bst_readings(slots)
+        started = time.perf_counter()
+        _compute_monthly_costs(
+            consumption_by_month, rates, [], sorted(consumption_by_month),
+            include_slots=True,
+        )
+        assert time.perf_counter() - started < 2.0
