@@ -122,6 +122,7 @@ def _make_coordinator(store, client, mpan=MPAN):
     coord._cached_mpan = None
     coord._cached_rates = {}
     coord._cached_standing = {}
+    coord._rates_period = None
     coord.update_interval = COMPARISON_UPDATE_INTERVAL
     return coord
 
@@ -221,3 +222,27 @@ class TestConsumptionCache:
 
         assert coord._cached_consumption == {}
         assert coord._cached_mpan is None
+
+
+class TestRateCache:
+    async def test_rates_reused_within_a_day(self):
+        client = _make_client()
+        coord = _make_coordinator(FakeStore(), client)
+        await _run_until_settled(coord)
+        fetches = client.get_electricity_rates.await_count
+
+        await coord._async_update_data()
+
+        assert client.get_electricity_rates.await_count == fetches
+
+    async def test_rates_refetched_when_the_day_rolls_over(self):
+        client = _make_client()
+        coord = _make_coordinator(FakeStore(), client)
+        await _run_until_settled(coord)
+        client.get_electricity_rates.reset_mock()
+
+        _FrozenDatetime.now_value = NOW + timedelta(days=1)
+        await coord._async_update_data()
+
+        windows = [c.kwargs["period_to"] for c in client.get_electricity_rates.call_args_list]
+        assert windows == [datetime(2026, 9, 21, tzinfo=UTC)] * 2

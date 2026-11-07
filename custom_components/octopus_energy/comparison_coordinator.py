@@ -270,6 +270,7 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
         self._cached_mpan: str | None = None
         self._cached_rates: dict[str, list] = {}
         self._cached_standing: dict[str, list] = {}
+        self._rates_period: tuple[datetime, datetime] | None = None
         self._store = Store(
             hass, COMPARISON_CACHE_STORAGE_VERSION, COMPARISON_CACHE_STORAGE_KEY
         )
@@ -502,6 +503,14 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
 
         tariffs: list[TariffComparison] = []
 
+        period_end = yesterday + timedelta(days=1)
+        if self._rates_period != (period_start, period_end):
+            # Cached rates cover the window they were fetched for; past it the
+            # lookup would price every new slot at the last cached rate
+            self._cached_rates.clear()
+            self._cached_standing.clear()
+            self._rates_period = (period_start, period_end)
+
         for prod_idx, product_code in enumerate(product_codes):
             if prod_idx > 0:
                 await asyncio.sleep(_INTER_REQUEST_DELAY)
@@ -517,8 +526,6 @@ class TariffComparisonCoordinator(DataUpdateCoordinator[TariffComparisonData]):
                 tariff_code=tariff_code,
                 is_current=is_current,
             )
-
-            period_end = yesterday + timedelta(days=1)
 
             # For the current tariff, try GraphQL applicable rates first
             rates = None
