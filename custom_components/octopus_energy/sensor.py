@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,8 +14,9 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import UnitOfEnergy, UnitOfPower
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -307,6 +308,10 @@ class OctopusEnergySensorDescription(SensorEntityDescription):
 
     value_fn: Callable[[MeterData], StateType]
     attrs_fn: Callable[[MeterData], dict[str, Any]] | None = None
+    # The value depends on the clock as well as the fetched data. Without a
+    # redraw at each boundary it stays on the old rate until the next poll,
+    # which on 2026-11-09 kept Go's 9.4p showing until 05:37.
+    refresh_at_slot_boundaries: bool = False
 
 
 ELECTRICITY_SENSOR_DESCRIPTIONS: tuple[OctopusEnergySensorDescription, ...] = (
@@ -318,6 +323,7 @@ ELECTRICITY_SENSOR_DESCRIPTIONS: tuple[OctopusEnergySensorDescription, ...] = (
         suggested_display_precision=2,
         value_fn=_get_current_rate,
         attrs_fn=_get_rate_attrs,
+        refresh_at_slot_boundaries=True,
     ),
     OctopusEnergySensorDescription(
         key="next_rate",
@@ -327,6 +333,7 @@ ELECTRICITY_SENSOR_DESCRIPTIONS: tuple[OctopusEnergySensorDescription, ...] = (
         suggested_display_precision=2,
         value_fn=_get_next_rate,
         attrs_fn=_get_next_rate_attrs,
+        refresh_at_slot_boundaries=True,
     ),
     OctopusEnergySensorDescription(
         key="previous_consumption",
@@ -366,6 +373,7 @@ GAS_SENSOR_DESCRIPTIONS: tuple[OctopusEnergySensorDescription, ...] = (
         suggested_display_precision=2,
         value_fn=_get_current_rate,
         attrs_fn=_get_rate_attrs,
+        refresh_at_slot_boundaries=True,
     ),
     OctopusEnergySensorDescription(
         key="gas_previous_consumption",
@@ -446,17 +454,10 @@ async def async_setup_entry(
         else:
             prefix = "export_" if meter.is_export else ""
             for description in ELECTRICITY_SENSOR_DESCRIPTIONS:
-                desc = OctopusEnergySensorDescription(
+                desc = replace(
+                    description,
                     key=f"{prefix}{description.key}",
-                    translation_key=f"{prefix}{description.translation_key}"
-                    if prefix
-                    else description.translation_key,
-                    native_unit_of_measurement=description.native_unit_of_measurement,
-                    device_class=description.device_class,
-                    state_class=description.state_class,
-                    suggested_display_precision=description.suggested_display_precision,
-                    value_fn=description.value_fn,
-                    attrs_fn=description.attrs_fn,
+                    translation_key=f"{prefix}{description.translation_key}",
                 )
                 entities.append(
                     OctopusEnergySensor(coordinator, desc, meter_id)
@@ -506,6 +507,21 @@ class OctopusEnergySensor(OctopusEnergyEntity, SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator, description, meter_id)
         self.entity_description = description
+
+    async def async_added_to_hass(self) -> None:
+        """Redraw rate sensors when a half-hourly slot begins."""
+        await super().async_added_to_hass()
+        if self.entity_description.refresh_at_slot_boundaries:
+            # UK rates change on the half hour, in UTC and in local time alike.
+            self.async_on_remove(
+                async_track_time_change(
+                    self.hass, self._handle_slot_boundary, minute=(0, 30), second=0
+                )
+            )
+
+    @callback
+    def _handle_slot_boundary(self, _now: datetime) -> None:
+        self.async_write_ha_state()
 
     @property
     def native_value(self) -> StateType:
