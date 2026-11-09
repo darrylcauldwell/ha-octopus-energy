@@ -13,7 +13,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -25,6 +25,7 @@ from .comparison_coordinator import (
     TariffComparisonData,
 )
 from .const import DOMAIN
+from .home_mini_coordinator import HomeMiniCoordinator, HomeMiniReading
 from .solar_coordinator import SolarEstimateCoordinator, SolarEstimateData
 from .coordinator import (
     CarbonIntensityPeriod,
@@ -396,6 +397,35 @@ GAS_SENSOR_DESCRIPTIONS: tuple[OctopusEnergySensorDescription, ...] = (
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class HomeMiniSensorDescription(SensorEntityDescription):
+    """Describes a Home Mini live telemetry sensor."""
+
+    value_fn: Callable[[HomeMiniReading], StateType]
+
+
+HOME_MINI_SENSOR_DESCRIPTIONS: tuple[HomeMiniSensorDescription, ...] = (
+    HomeMiniSensorDescription(
+        key="home_mini_demand",
+        translation_key="home_mini_demand",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        value_fn=lambda reading: reading.demand_w,
+    ),
+    HomeMiniSensorDescription(
+        key="home_mini_consumption",
+        translation_key="home_mini_consumption",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        value_fn=lambda reading: reading.consumption_kwh,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: OctopusEnergyConfigEntry,
@@ -441,6 +471,23 @@ async def async_setup_entry(
     # Add solar estimate sensor if configured
     if runtime_data.solar is not None:
         entities.append(SolarEstimateSensor(runtime_data.solar, entry))
+
+    # Home Mini sensors only for meters that returned telemetry. A smart
+    # meter without a Home Mini has a device id but never any readings, so
+    # its sensors would sit at unknown forever. If the first poll failed,
+    # nothing is known yet, so every smart meter gets them.
+    home_mini = runtime_data.home_mini
+    if home_mini is not None:
+        meter_ids = (
+            list(home_mini.data)
+            if home_mini.last_update_success and home_mini.data is not None
+            else home_mini.meter_ids
+        )
+        for meter_id in meter_ids:
+            for description in HOME_MINI_SENSOR_DESCRIPTIONS:
+                entities.append(
+                    HomeMiniSensor(home_mini, description, entry, meter_id)
+                )
 
     async_add_entities(entities)
 
@@ -736,3 +783,43 @@ class SolarEstimateSensor(
             ],
             "updated_at": data.updated_at,
         }
+
+
+class HomeMiniSensor(CoordinatorEntity[HomeMiniCoordinator], SensorEntity):
+    """Live smart meter reading from an Octopus Home Mini."""
+
+    _attr_has_entity_name = True
+    entity_description: HomeMiniSensorDescription
+
+    def __init__(
+        self,
+        coordinator: HomeMiniCoordinator,
+        description: HomeMiniSensorDescription,
+        entry: OctopusEnergyConfigEntry,
+        meter_id: str,
+    ) -> None:
+        """Initialize the Home Mini sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._meter_id = meter_id
+        self._attr_unique_id = f"{entry.entry_id}_{meter_id}_{description.key}"
+        # Identifiers only, so the sensor joins the meter's existing device.
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{entry.entry_id}_{meter_id}")},
+        )
+
+    @property
+    def _reading(self) -> HomeMiniReading | None:
+        return (self.coordinator.data or {}).get(self._meter_id)
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the latest reading."""
+        reading = self._reading
+        return None if reading is None else self.entity_description.value_fn(reading)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return when the meter took the reading, to show its age."""
+        reading = self._reading
+        return None if reading is None else {"read_at": reading.read_at.isoformat()}

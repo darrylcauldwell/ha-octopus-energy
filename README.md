@@ -37,6 +37,15 @@ The integration auto-discovers all meters on your account and creates sensors pe
 | Previous cost | GBP | Total yesterday cost |
 | Standing charge | p/day | Current daily standing charge |
 
+### Per electricity meter with an Octopus Home Mini
+
+Added when the meter has a Home Mini sending live readings. Polled once a minute.
+
+| Sensor | Unit | Description |
+|--------|------|-------------|
+| Home Mini demand | W | Live import power (`read_at` attribute gives the reading time) |
+| Home Mini meter reading | kWh | Smart meter import register; usable in the Energy dashboard |
+
 ### Per electricity meter (export)
 
 Same sensors with `export_` prefix.

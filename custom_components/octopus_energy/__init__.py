@@ -23,6 +23,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .comparison_coordinator import TariffComparisonCoordinator
 from .const import CONF_ACCOUNT_NUMBER, CONF_API_KEY, CONF_POSTCODE, DOMAIN
+from .home_mini_coordinator import HomeMiniCoordinator
 from .solar_coordinator import SolarEstimateCoordinator
 from .coordinator import (
     OctopusEnergyConfigEntry,
@@ -56,14 +57,14 @@ async def async_setup_entry(
     await coordinator.async_load_cache()
     await coordinator.async_config_entry_first_refresh()
 
-    # Always create GraphQL client (used by comparison + solar)
+    # Always create GraphQL client (used by comparison, solar and Home Mini)
     graphql_client = OctopusEnergyGraphQLClient(
         api_key=api_key, session=session
     )
 
     # Stagger secondary coordinators to avoid triggering API rate limits
     # on restart.  The main coordinator fires first (above), then we wait
-    # before starting comparison and solar fetches.
+    # before starting comparison, solar and Home Mini fetches.
     comparison = TariffComparisonCoordinator(
         hass, entry, client, coordinator, graphql_client
     )
@@ -78,10 +79,13 @@ async def async_setup_entry(
         await asyncio.sleep(10)
         await solar.async_refresh()
 
+    home_mini = await _async_setup_home_mini(hass, entry, graphql_client)
+
     entry.runtime_data = OctopusEnergyRuntimeData(
         coordinator=coordinator,
         comparison=comparison,
         solar=solar,
+        home_mini=home_mini,
     )
 
     # Register custom card
@@ -92,6 +96,31 @@ async def async_setup_entry(
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_setup_home_mini(
+    hass: HomeAssistant,
+    entry: OctopusEnergyConfigEntry,
+    graphql_client: OctopusEnergyGraphQLClient,
+) -> HomeMiniCoordinator | None:
+    """Start Home Mini polling if the account has a smart import meter.
+
+    Optional: a failed lookup leaves the rest of the integration running
+    without live readings rather than failing setup.
+    """
+    try:
+        devices = await graphql_client.get_smart_meter_devices(
+            entry.data[CONF_ACCOUNT_NUMBER]
+        )
+    except OctopusEnergyError as err:
+        _LOGGER.warning("Smart meter lookup failed, no Home Mini sensors: %s", err)
+        return None
+    if not devices:
+        return None
+    home_mini = HomeMiniCoordinator(hass, entry, graphql_client, devices)
+    await asyncio.sleep(10)
+    await home_mini.async_refresh()
+    return home_mini
 
 
 async def _async_register_card(hass: HomeAssistant) -> None:

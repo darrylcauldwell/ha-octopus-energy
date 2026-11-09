@@ -112,6 +112,14 @@
       "carbon_correlation": {
         "name": "Carbon correlation",
         "description": "Weighted average carbon intensity of yesterday's electricity consumption"
+      },
+      "home_mini_demand": {
+        "name": "Home Mini demand",
+        "description": "Live import power reported by the Octopus Home Mini"
+      },
+      "home_mini_consumption": {
+        "name": "Home Mini meter reading",
+        "description": "Smart meter import register reported by the Octopus Home Mini"
       }
     }
   },
