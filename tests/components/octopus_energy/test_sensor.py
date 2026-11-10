@@ -15,7 +15,14 @@ from custom_components.octopus_energy.sensor import (
     _get_cost_attrs,
 )
 
-from .conftest import MOCK_CONSUMPTION, MOCK_RATES, MOCK_STANDING_CHARGES
+from aiooctopusenergy import Rate
+
+from .conftest import (
+    MOCK_CONSUMPTION,
+    MOCK_RATES,
+    MOCK_STANDING_CHARGES,
+    YESTERDAY,
+)
 
 
 @pytest.fixture
@@ -134,3 +141,38 @@ class TestCostAttrs:
             is_gas=False,
         )
         assert _get_cost_attrs(meter) == {}
+
+
+class TestGasConversion:
+    """SMETS2 gas arrives in m³ and must be reported and priced as kWh."""
+
+    @pytest.fixture
+    def gas_meter(self) -> MeterData:
+        return MeterData(
+            meter_id="2112316000_E6E07422582221",
+            serial_number="E6E07422582221",
+            tariff_code="G-1R-VAR-22-11-01-C",
+            product_code="VAR-22-11-01",
+            is_export=False,
+            is_gas=True,
+            rates=[Rate(value_exc_vat=7.45, value_inc_vat=7.82, valid_from=YESTERDAY)],
+            consumption=MOCK_CONSUMPTION,
+            kwh_per_unit=11.22,
+        )
+
+    def test_consumption_in_kwh(self, gas_meter):
+        assert _get_previous_consumption(gas_meter) == pytest.approx(0.8 * 11.22)
+
+    def test_cost_priced_per_kwh(self, gas_meter):
+        assert _get_previous_cost(gas_meter) == pytest.approx(
+            round(0.8 * 11.22 * 7.82 / 100, 2)
+        )
+
+    def test_consumption_attrs_in_kwh(self, gas_meter):
+        charges = _get_consumption_attrs(gas_meter)["charges"]
+        assert charges[0]["consumption"] == pytest.approx(0.5 * 11.22)
+
+    def test_cost_attrs_in_kwh(self, gas_meter):
+        charge = _get_cost_attrs(gas_meter)["charges"][0]
+        assert charge["consumption"] == pytest.approx(0.5 * 11.22)
+        assert charge["cost"] == pytest.approx(round(0.5 * 11.22 * 7.82 / 100, 4))

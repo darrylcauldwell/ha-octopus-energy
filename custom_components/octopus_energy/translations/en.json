@@ -31,14 +31,18 @@
           "update_interval": "Update interval",
           "comparison_months": "Comparison months",
           "comparison_products": "Comparison tariffs",
-          "postcode": "Postcode (solar estimate)"
+          "postcode": "Postcode (solar estimate)",
+          "gas_meter_units": "Gas meter reports",
+          "gas_calorific_value": "Gas calorific value"
         },
         "data_description": {
           "api_key": "Your Octopus Energy API key",
           "update_interval": "How often to fetch new data (minutes)",
           "comparison_months": "Number of months to compare (1-12)",
           "comparison_products": "Product codes to compare against (comma-separated)",
-          "postcode": "UK postcode for solar generation estimates (leave empty to disable)"
+          "postcode": "UK postcode for solar generation estimates (leave empty to disable)",
+          "gas_meter_units": "SMETS2 smart gas meters report cubic metres, SMETS1 report kWh",
+          "gas_calorific_value": "MJ/m³ used to convert cubic metres to kWh; your gas bill shows the value Octopus uses"
         }
       }
     }

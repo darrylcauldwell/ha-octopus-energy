@@ -71,7 +71,7 @@ def _get_previous_consumption(meter: MeterData) -> float | None:
     """Get total consumption for yesterday."""
     if not meter.consumption:
         return None
-    return sum(c.consumption for c in meter.consumption)
+    return sum(c.consumption for c in meter.consumption) * meter.kwh_per_unit
 
 
 def _get_previous_cost(meter: MeterData) -> float | None:
@@ -90,7 +90,7 @@ def _get_previous_cost(meter: MeterData) -> float | None:
                 rate_value = rate.value_inc_vat
                 break
         if rate_value is not None:
-            total_cost += reading.consumption * rate_value
+            total_cost += reading.consumption * meter.kwh_per_unit * rate_value
 
     return round(total_cost / 100.0, 2)  # Convert pence to pounds
 
@@ -115,7 +115,7 @@ def _get_consumption_attrs(meter: MeterData) -> dict[str, Any]:
             {
                 "start": c.interval_start.isoformat(),
                 "end": c.interval_end.isoformat(),
-                "consumption": c.consumption,
+                "consumption": round(c.consumption * meter.kwh_per_unit, 3),
             }
             for c in sorted(meter.consumption, key=lambda c: c.interval_start)
         ]
@@ -129,6 +129,7 @@ def _get_cost_attrs(meter: MeterData) -> dict[str, Any]:
 
     charges = []
     for reading in sorted(meter.consumption, key=lambda c: c.interval_start):
+        kwh = round(reading.consumption * meter.kwh_per_unit, 3)
         rate_value = None
         for rate in meter.rates:
             if rate.valid_from <= reading.interval_start and (
@@ -140,9 +141,9 @@ def _get_cost_attrs(meter: MeterData) -> dict[str, Any]:
             {
                 "start": reading.interval_start.isoformat(),
                 "end": reading.interval_end.isoformat(),
-                "consumption": reading.consumption,
+                "consumption": kwh,
                 "rate": rate_value,
-                "cost": round(reading.consumption * rate_value / 100.0, 4)
+                "cost": round(kwh * rate_value / 100.0, 4)
                 if rate_value
                 else None,
             }

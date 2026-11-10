@@ -26,12 +26,18 @@ from .const import (
     CONF_API_KEY,
     CONF_COMPARISON_MONTHS,
     CONF_COMPARISON_PRODUCTS,
+    CONF_GAS_CALORIFIC_VALUE,
+    CONF_GAS_METER_UNITS,
     CONF_POSTCODE,
     CONF_UPDATE_INTERVAL,
     DEFAULT_COMPARISON_MONTHS,
     DEFAULT_COMPARISON_PRODUCTS,
+    DEFAULT_GAS_CALORIFIC_VALUE,
+    DEFAULT_GAS_METER_UNITS,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    GAS_UNITS_KWH,
+    GAS_UNITS_M3,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -159,6 +165,12 @@ class OctopusEnergyOptionsFlow(OptionsFlow):
                         CONF_COMPARISON_MONTHS, DEFAULT_COMPARISON_MONTHS
                     ),
                     CONF_COMPARISON_PRODUCTS: products,
+                    CONF_GAS_METER_UNITS: user_input.get(
+                        CONF_GAS_METER_UNITS, DEFAULT_GAS_METER_UNITS
+                    ),
+                    CONF_GAS_CALORIFIC_VALUE: user_input.get(
+                        CONF_GAS_CALORIFIC_VALUE, DEFAULT_GAS_CALORIFIC_VALUE
+                    ),
                 }
                 postcode = user_input.get(CONF_POSTCODE, "").strip()
                 if postcode:
@@ -201,6 +213,23 @@ class OctopusEnergyOptionsFlow(OptionsFlow):
                     CONF_POSTCODE,
                     default=self.config_entry.options.get(CONF_POSTCODE, ""),
                 ): str,
+                vol.Required(
+                    CONF_GAS_METER_UNITS,
+                    default=self.config_entry.options.get(
+                        CONF_GAS_METER_UNITS, DEFAULT_GAS_METER_UNITS
+                    ),
+                ): vol.In(
+                    {
+                        GAS_UNITS_M3: "Cubic metres (SMETS2)",
+                        GAS_UNITS_KWH: "kWh (SMETS1)",
+                    }
+                ),
+                vol.Required(
+                    CONF_GAS_CALORIFIC_VALUE,
+                    default=self.config_entry.options.get(
+                        CONF_GAS_CALORIFIC_VALUE, DEFAULT_GAS_CALORIFIC_VALUE
+                    ),
+                ): vol.All(vol.Coerce(float), vol.Range(min=35, max=45)),
             }
         )
 

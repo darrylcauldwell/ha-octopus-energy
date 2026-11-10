@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .comparison_coordinator import TariffComparisonCoordinator
@@ -40,9 +41,15 @@ from .const import (
     CARBON_INTENSITY_API_URL,
     CONF_ACCOUNT_NUMBER,
     CONF_API_KEY,
+    CONF_GAS_CALORIFIC_VALUE,
+    CONF_GAS_METER_UNITS,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_GAS_CALORIFIC_VALUE,
+    DEFAULT_GAS_METER_UNITS,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    GAS_UNITS_KWH,
+    GAS_VOLUME_CORRECTION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,6 +102,20 @@ def _get_active_agreement(
     return agreements[0] if agreements else None
 
 
+def _gas_kwh_per_unit(options: Mapping[str, Any]) -> float:
+    """Return the kWh in one unit of gas consumption as the API reports it.
+
+    m³ converts as bills do: volume correction × calorific value (MJ/m³)
+    ÷ 3.6 MJ per kWh.
+    """
+    if options.get(CONF_GAS_METER_UNITS, DEFAULT_GAS_METER_UNITS) == GAS_UNITS_KWH:
+        return 1.0
+    calorific_value = options.get(
+        CONF_GAS_CALORIFIC_VALUE, DEFAULT_GAS_CALORIFIC_VALUE
+    )
+    return GAS_VOLUME_CORRECTION * calorific_value / 3.6
+
+
 @dataclass
 class CarbonIntensityPeriod:
     """Carbon intensity data for a single half-hour period."""
@@ -117,8 +138,11 @@ class MeterData:
     is_export: bool
     is_gas: bool
     rates: list[Rate] = field(default_factory=list)
+    # As the API returns it, so the cache never holds converted values; SMETS2
+    # gas is in m³, and readings × kwh_per_unit gives kWh.
     consumption: list[Consumption] = field(default_factory=list)
     standing_charges: list[StandingCharge] = field(default_factory=list)
+    kwh_per_unit: float = 1.0
 
 
 @dataclass
@@ -217,6 +241,11 @@ class OctopusEnergyCoordinator(TimestampDataUpdateCoordinator[OctopusEnergyData]
                     product_code=md["product_code"],
                     is_export=md["is_export"],
                     is_gas=md["is_gas"],
+                    kwh_per_unit=(
+                        _gas_kwh_per_unit(self.config_entry.options)
+                        if md["is_gas"]
+                        else 1.0
+                    ),
                     consumption=[
                         Consumption(
                             consumption=c["consumption"],
@@ -461,6 +490,7 @@ class OctopusEnergyCoordinator(TimestampDataUpdateCoordinator[OctopusEnergyData]
                     product_code=product_code,
                     is_export=False,
                     is_gas=True,
+                    kwh_per_unit=_gas_kwh_per_unit(self.config_entry.options),
                 )
 
         # Build task lists with tracking

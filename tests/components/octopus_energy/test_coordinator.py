@@ -13,10 +13,27 @@ from custom_components.octopus_energy.coordinator import (
     OctopusEnergyCoordinator,
     OctopusEnergyData,
     _extract_product_code,
+    _gas_kwh_per_unit,
     _get_active_agreement,
 )
 
 from .conftest import MOCK_ACCOUNT
+
+
+class TestGasKwhPerUnit:
+    def test_defaults_to_cubic_metres(self):
+        assert _gas_kwh_per_unit({}) == pytest.approx(1.02264 * 39.5 / 3.6)
+
+    def test_kwh_meter_is_not_converted(self):
+        assert _gas_kwh_per_unit({"gas_meter_units": "kwh"}) == 1.0
+
+    def test_uses_configured_calorific_value(self):
+        options = {"gas_meter_units": "m3", "gas_calorific_value": 40.0}
+        assert _gas_kwh_per_unit(options) == pytest.approx(1.02264 * 40.0 / 3.6)
+
+    def test_bill_example(self):
+        # 3.148 m³ in a day is about 35 kWh, not 3.1 kWh.
+        assert 3.148 * _gas_kwh_per_unit({}) == pytest.approx(35.32, abs=0.01)
 
 
 class TestExtractProductCode:
