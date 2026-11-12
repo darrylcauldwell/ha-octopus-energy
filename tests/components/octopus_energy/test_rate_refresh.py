@@ -54,6 +54,7 @@ class TestDescriptions:
         entry.runtime_data.coordinator = coordinator
         entry.runtime_data.solar = None
         entry.runtime_data.home_mini = None
+        entry.runtime_data.home_mini_gas = None
         add_entities = MagicMock()
 
         await async_setup_entry(MagicMock(), entry, add_entities)

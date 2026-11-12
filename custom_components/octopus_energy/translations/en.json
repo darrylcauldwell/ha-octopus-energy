@@ -123,7 +123,11 @@
       },
       "home_mini_consumption": {
         "name": "Home Mini meter reading",
-        "description": "Smart meter import register reported by the Octopus Home Mini"
+        "description": "Smart meter register reported by the Octopus Home Mini"
+      },
+      "home_mini_last_half_hour": {
+        "name": "Home Mini last half-hour",
+        "description": "Gas used in the latest half-hour reported by the Octopus Home Mini"
       }
     }
   },

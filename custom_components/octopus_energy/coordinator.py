@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .comparison_coordinator import TariffComparisonCoordinator
-    from .home_mini_coordinator import HomeMiniCoordinator
+    from .home_mini_coordinator import HomeMiniCoordinator, HomeMiniGasCoordinator
     from .solar_coordinator import SolarEstimateCoordinator
 
 from aiooctopusenergy import (
@@ -162,6 +162,7 @@ class OctopusEnergyRuntimeData:
     comparison: TariffComparisonCoordinator
     solar: SolarEstimateCoordinator | None = None
     home_mini: HomeMiniCoordinator | None = None
+    home_mini_gas: HomeMiniGasCoordinator | None = None
 
 
 def _filter_latest_day(consumption: list[Consumption]) -> list[Consumption]:

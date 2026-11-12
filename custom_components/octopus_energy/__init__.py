@@ -23,7 +23,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .comparison_coordinator import TariffComparisonCoordinator
 from .const import CONF_ACCOUNT_NUMBER, CONF_API_KEY, CONF_POSTCODE, DOMAIN
-from .home_mini_coordinator import HomeMiniCoordinator
+from .home_mini_coordinator import HomeMiniCoordinator, HomeMiniGasCoordinator
 from .solar_coordinator import SolarEstimateCoordinator
 from .coordinator import (
     OctopusEnergyConfigEntry,
@@ -80,12 +80,14 @@ async def async_setup_entry(
         await solar.async_refresh()
 
     home_mini = await _async_setup_home_mini(hass, entry, graphql_client)
+    home_mini_gas = await _async_setup_home_mini_gas(hass, entry, graphql_client)
 
     entry.runtime_data = OctopusEnergyRuntimeData(
         coordinator=coordinator,
         comparison=comparison,
         solar=solar,
         home_mini=home_mini,
+        home_mini_gas=home_mini_gas,
     )
 
     # Register custom card
@@ -121,6 +123,32 @@ async def _async_setup_home_mini(
     await asyncio.sleep(10)
     await home_mini.async_refresh()
     return home_mini
+
+
+async def _async_setup_home_mini_gas(
+    hass: HomeAssistant,
+    entry: OctopusEnergyConfigEntry,
+    graphql_client: OctopusEnergyGraphQLClient,
+) -> HomeMiniGasCoordinator | None:
+    """Start Home Mini gas polling if the account has a smart gas meter.
+
+    Optional in the same way as the electricity Home Mini.
+    """
+    try:
+        devices = await graphql_client.get_smart_gas_meter_devices(
+            entry.data[CONF_ACCOUNT_NUMBER]
+        )
+    except OctopusEnergyError as err:
+        _LOGGER.warning(
+            "Smart gas meter lookup failed, no Home Mini gas sensors: %s", err
+        )
+        return None
+    if not devices:
+        return None
+    home_mini_gas = HomeMiniGasCoordinator(hass, entry, graphql_client, devices)
+    await asyncio.sleep(10)
+    await home_mini_gas.async_refresh()
+    return home_mini_gas
 
 
 async def _async_register_card(hass: HomeAssistant) -> None:

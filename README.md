@@ -46,6 +46,15 @@ Added when the meter has a Home Mini sending live readings. Polled once a minute
 | Home Mini demand | W | Live import power (`read_at` attribute gives the reading time) |
 | Home Mini meter reading | kWh | Smart meter import register; usable in the Energy dashboard |
 
+### Per gas meter with an Octopus Home Mini
+
+Added when the gas meter's readings reach the Home Mini. The meter uploads once every 30 minutes; polled every 5 minutes.
+
+| Sensor | Unit | Description |
+|--------|------|-------------|
+| Home Mini meter reading | kWh | Gas meter register, already converted from m³ by Octopus; usable in the Energy dashboard |
+| Home Mini last half-hour | kWh | Gas used in the latest uploaded half-hour (`period_start`/`period_end` attributes give the half-hour it covers, `read_at` when it was uploaded) |
+
 ### Per electricity meter (export)
 
 Same sensors with `export_` prefix.

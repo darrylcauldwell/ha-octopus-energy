@@ -26,7 +26,12 @@ from .comparison_coordinator import (
     TariffComparisonData,
 )
 from .const import DOMAIN
-from .home_mini_coordinator import HomeMiniCoordinator, HomeMiniReading
+from .home_mini_coordinator import (
+    GasHalfHour,
+    HomeMiniCoordinator,
+    HomeMiniGasCoordinator,
+    HomeMiniReading,
+)
 from .solar_coordinator import SolarEstimateCoordinator, SolarEstimateData
 from .coordinator import (
     CarbonIntensityPeriod,
@@ -435,6 +440,51 @@ HOME_MINI_SENSOR_DESCRIPTIONS: tuple[HomeMiniSensorDescription, ...] = (
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class HomeMiniGasSensorDescription(SensorEntityDescription):
+    """Describes a Home Mini gas sensor."""
+
+    value_fn: Callable[[GasHalfHour], StateType]
+
+
+HOME_MINI_GAS_SENSOR_DESCRIPTIONS: tuple[HomeMiniGasSensorDescription, ...] = (
+    HomeMiniGasSensorDescription(
+        key="home_mini_consumption",
+        translation_key="home_mini_consumption",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        value_fn=lambda half_hour: half_hour.consumption_kwh,
+    ),
+    HomeMiniGasSensorDescription(
+        key="home_mini_last_half_hour",
+        translation_key="home_mini_last_half_hour",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        # Each half-hour is its own total, starting at last_reset, so two
+        # equal half-hours in a row still both count in statistics.
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=3,
+        value_fn=lambda half_hour: half_hour.half_hour_kwh,
+    ),
+)
+
+
+def _meters_with_telemetry(
+    home_mini: HomeMiniCoordinator | HomeMiniGasCoordinator,
+) -> list[str]:
+    """Meters to give Home Mini sensors: only those that returned telemetry.
+
+    A smart meter without a Home Mini has a device id but never any readings,
+    so its sensors would sit at unknown forever. If the first poll failed,
+    nothing is known yet, so every smart meter gets them.
+    """
+    if home_mini.last_update_success and home_mini.data is not None:
+        return list(home_mini.data)
+    return home_mini.meter_ids
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: OctopusEnergyConfigEntry,
@@ -474,21 +524,20 @@ async def async_setup_entry(
     if runtime_data.solar is not None:
         entities.append(SolarEstimateSensor(runtime_data.solar, entry))
 
-    # Home Mini sensors only for meters that returned telemetry. A smart
-    # meter without a Home Mini has a device id but never any readings, so
-    # its sensors would sit at unknown forever. If the first poll failed,
-    # nothing is known yet, so every smart meter gets them.
     home_mini = runtime_data.home_mini
     if home_mini is not None:
-        meter_ids = (
-            list(home_mini.data)
-            if home_mini.last_update_success and home_mini.data is not None
-            else home_mini.meter_ids
-        )
-        for meter_id in meter_ids:
+        for meter_id in _meters_with_telemetry(home_mini):
             for description in HOME_MINI_SENSOR_DESCRIPTIONS:
                 entities.append(
                     HomeMiniSensor(home_mini, description, entry, meter_id)
+                )
+
+    home_mini_gas = runtime_data.home_mini_gas
+    if home_mini_gas is not None:
+        for meter_id in _meters_with_telemetry(home_mini_gas):
+            for description in HOME_MINI_GAS_SENSOR_DESCRIPTIONS:
+                entities.append(
+                    HomeMiniGasSensor(home_mini_gas, description, entry, meter_id)
                 )
 
     async_add_entities(entities)
@@ -840,3 +889,59 @@ class HomeMiniSensor(CoordinatorEntity[HomeMiniCoordinator], SensorEntity):
         """Return when the meter took the reading, to show its age."""
         reading = self._reading
         return None if reading is None else {"read_at": reading.read_at.isoformat()}
+
+
+class HomeMiniGasSensor(CoordinatorEntity[HomeMiniGasCoordinator], SensorEntity):
+    """Half-hourly gas reading from an Octopus Home Mini."""
+
+    _attr_has_entity_name = True
+    entity_description: HomeMiniGasSensorDescription
+
+    def __init__(
+        self,
+        coordinator: HomeMiniGasCoordinator,
+        description: HomeMiniGasSensorDescription,
+        entry: OctopusEnergyConfigEntry,
+        meter_id: str,
+    ) -> None:
+        """Initialize the Home Mini gas sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._meter_id = meter_id
+        self._attr_unique_id = f"{entry.entry_id}_{meter_id}_{description.key}"
+        # Identifiers only, so the sensor joins the meter's existing device.
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{entry.entry_id}_{meter_id}")},
+        )
+
+    @property
+    def _half_hour(self) -> GasHalfHour | None:
+        return (self.coordinator.data or {}).get(self._meter_id)
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the latest half-hour's value."""
+        half_hour = self._half_hour
+        return (
+            None if half_hour is None else self.entity_description.value_fn(half_hour)
+        )
+
+    @property
+    def last_reset(self) -> datetime | None:
+        """Start of the half-hour, for the per-half-hour total only."""
+        half_hour = self._half_hour
+        if half_hour is None or self.entity_description.state_class != SensorStateClass.TOTAL:
+            return None
+        return half_hour.period_start
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the half-hour the value covers and when it was uploaded."""
+        half_hour = self._half_hour
+        if half_hour is None:
+            return None
+        return {
+            "period_start": half_hour.period_start.isoformat(),
+            "period_end": half_hour.period_end.isoformat(),
+            "read_at": half_hour.read_at.isoformat(),
+        }
