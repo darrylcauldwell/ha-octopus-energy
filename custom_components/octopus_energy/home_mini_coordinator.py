@@ -62,7 +62,11 @@ def latest_complete_reading(
 
 @dataclass(frozen=True)
 class GasHalfHour:
-    """The latest half-hour of gas reported by the Home Mini for one meter."""
+    """The latest period of gas reported by the Home Mini for one meter.
+
+    Normally a half-hour; an hour when an upload slips past a boundary or one
+    is missed.
+    """
 
     read_at: datetime
     period_start: datetime
@@ -72,29 +76,44 @@ class GasHalfHour:
     half_hour_kwh: float
 
 
+def _boundary_at_or_before(moment: datetime) -> datetime:
+    return moment.replace(minute=moment.minute // 30 * 30, second=0, microsecond=0)
+
+
 def latest_gas_half_hour(
     telemetry: list[SmartMeterTelemetry],
 ) -> GasHalfHour | None:
-    """Newest gas reading carrying both the register and its half-hour.
+    """Newest gas reading carrying both the register and its delta.
 
-    An upload's delta is the half-hour that ended at the last :00 or :30
-    before read_at, so the period is placed there, not in the 30 minutes up
-    to read_at.
+    Each upload carries the register at the last :00 or :30 at or before
+    read_at, so its delta runs from the previous upload's boundary to that
+    one. Uploads drift about 10 s later each time; the one that crosses a
+    boundary spans an hour (12 Nov 2026: a 20:30:00 upload held 19:30-20:30).
     """
-    for item in sorted(telemetry, key=lambda t: t.read_at, reverse=True):
-        if item.consumption_kwh is None or item.consumption_delta_kwh is None:
-            continue
-        period_end = item.read_at.replace(
-            minute=item.read_at.minute // 30 * 30, second=0, microsecond=0
-        )
-        return GasHalfHour(
-            read_at=item.read_at,
-            period_start=period_end - HALF_HOUR,
-            period_end=period_end,
-            consumption_kwh=item.consumption_kwh,
-            half_hour_kwh=item.consumption_delta_kwh,
-        )
-    return None
+    complete = sorted(
+        (
+            t
+            for t in telemetry
+            if t.consumption_kwh is not None and t.consumption_delta_kwh is not None
+        ),
+        key=lambda t: t.read_at,
+    )
+    if not complete:
+        return None
+    latest = complete[-1]
+    period_end = _boundary_at_or_before(latest.read_at)
+    period_start = (
+        _boundary_at_or_before(complete[-2].read_at)
+        if len(complete) > 1
+        else period_end - HALF_HOUR
+    )
+    return GasHalfHour(
+        read_at=latest.read_at,
+        period_start=period_start,
+        period_end=period_end,
+        consumption_kwh=latest.consumption_kwh,
+        half_hour_kwh=latest.consumption_delta_kwh,
+    )
 
 
 class HomeMiniCoordinator(DataUpdateCoordinator[dict[str, HomeMiniReading]]):

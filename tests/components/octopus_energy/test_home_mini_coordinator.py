@@ -194,6 +194,27 @@ class TestLatestGasHalfHour:
             datetime(2026, 11, 10, 16, 30, tzinfo=UTC),
         )
 
+    def test_upload_that_slips_past_a_boundary_spans_an_hour(self):
+        result = latest_gas_half_hour(
+            [_gas_upload(19, 59, 50, 0.0), _gas_upload(20, 30, 0, 8.887)]
+        )
+        assert result is not None
+        assert (result.period_start, result.period_end) == (
+            datetime(2026, 11, 10, 19, 30, tzinfo=UTC),
+            datetime(2026, 11, 10, 20, 30, tzinfo=UTC),
+        )
+        assert result.half_hour_kwh == 8.887
+
+    def test_missed_upload_spans_the_gap(self):
+        result = latest_gas_half_hour(
+            [_gas_upload(7, 46, 40, 3.44), _gas_upload(8, 46, 50, 7.9)]
+        )
+        assert result is not None
+        assert (result.period_start, result.period_end) == (
+            datetime(2026, 11, 10, 7, 30, tzinfo=UTC),
+            datetime(2026, 11, 10, 8, 30, tzinfo=UTC),
+        )
+
     def test_skips_uploads_missing_a_value(self):
         result = latest_gas_half_hour(
             [_gas_upload(7, 46, 40, 3.44), _gas_upload(8, 16, 50, None)]

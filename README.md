@@ -53,7 +53,7 @@ Added when the gas meter's readings reach the Home Mini. The meter uploads once 
 | Sensor | Unit | Description |
 |--------|------|-------------|
 | Home Mini meter reading | kWh | Gas meter register, already converted from m³ by Octopus; usable in the Energy dashboard |
-| Home Mini last half-hour | kWh | Gas used in the latest uploaded half-hour (`period_start`/`period_end` attributes give the half-hour it covers, `read_at` when it was uploaded) |
+| Home Mini last half-hour | kWh | Gas used in the latest upload, normally one half-hour; an hour when an upload slips past a boundary or one is missed (`period_start`/`period_end` attributes give the period it covers, `read_at` when it was uploaded) |
 
 ### Per electricity meter (export)
 
